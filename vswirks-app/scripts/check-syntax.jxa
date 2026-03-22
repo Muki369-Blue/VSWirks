@@ -1,0 +1,29 @@
+ObjC.import("Foundation");
+
+const app = Application.currentApplication();
+app.includeStandardAdditions = true;
+
+function readFile(filePath) {
+  const data = $.NSData.dataWithContentsOfFile($(filePath));
+  if (!data) {
+    throw new Error(`Unable to read ${filePath}`);
+  }
+  const text = $.NSString.alloc.initWithDataEncoding(data, $.NSUTF8StringEncoding);
+  return ObjC.unwrap(text);
+}
+
+function main(argv) {
+  const files = argv.slice(4);
+  if (!files.length) {
+    throw new Error("Pass one or more JavaScript files to parse.");
+  }
+
+  files.forEach((filePath) => {
+    const code = readFile(filePath);
+    Function(code);
+  });
+
+  console.log(`Parsed ${files.length} files`);
+}
+
+main($.NSProcessInfo.processInfo.arguments.js);

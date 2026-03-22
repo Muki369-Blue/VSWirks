@@ -1,0 +1,247 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>VSWirks App</title>
+    <link rel="stylesheet" href="./app.css" />
+  </head>
+  <body>
+    <div id="app" class="shell">
+      <header class="topbar">
+        <div class="brand">
+          <span class="eyebrow">Local-first companion</span>
+          <strong>VSWirks App</strong>
+          <span class="subtitle">specs, approvals, runs, validations, and editor sync</span>
+        </div>
+        <div class="topbar-controls">
+          <select id="mode">
+            <option value="chat">Chat</option>
+            <option value="agent">Agent</option>
+          </select>
+          <select id="workflowPreset"></select>
+          <select id="model"></select>
+          <button id="refreshModels">Refresh</button>
+          <button id="focusChat">Focus Chat</button>
+          <button id="startService">Start Service</button>
+          <span id="serviceStatus" class="pill service offline">Service offline</span>
+        </div>
+      </header>
+
+      <div class="bridge-strip">
+        <span id="projectWorkspace" class="pill">No project</span>
+        <span id="bridgeWorkspace" class="pill muted">Editor not connected</span>
+        <span id="bridgeFile" class="pill muted hidden"></span>
+        <span id="bridgeSelection" class="pill muted hidden"></span>
+        <button id="syncBridge" class="ghost-button">Sync Editor</button>
+      </div>
+
+      <div class="layout">
+        <aside class="left-rail panel">
+          <div class="panel-header">
+            <strong>Projects</strong>
+            <div class="panel-actions">
+              <button id="openProjectFolder" class="ghost-button">Open Folder</button>
+              <button id="setProjectTarget" class="ghost-button">Set Target Folder</button>
+              <button id="openProjectInEditor" class="ghost-button">Reveal In Editor</button>
+            </div>
+          </div>
+          <div id="projectList" class="project-list"></div>
+
+          <div class="panel-header compact">
+            <strong>Chats</strong>
+            <button id="newChat" class="primary compact-button">Start New Chat</button>
+          </div>
+          <div id="threadList" class="thread-list"></div>
+        </aside>
+
+        <main class="center-pane">
+          <section id="attachments" class="attachments hidden"></section>
+          <section id="messages" class="messages"></section>
+          <section class="composer panel">
+            <div class="composer-actions">
+              <button id="attachFile">Attach File</button>
+              <button id="attachImage">Attach Image</button>
+              <button id="attachEditorSelection">Attach Editor Selection</button>
+              <button id="stop" class="danger hidden">Stop</button>
+            </div>
+            <div class="vibe-bar">
+              <div class="vibe-copy">
+                <strong>Local Vibe</strong>
+                <span id="vibeStatusText" class="meta"
+                  >Hold to talk, generate a spec, then confirm it into Act.</span
+                >
+              </div>
+              <div class="vibe-actions">
+                <button id="vibeHold" class="accent-button" type="button">Hold To Talk</button>
+                <button id="vibeClear" class="ghost-button" type="button">Clear Voice Draft</button>
+                <button id="vibeBuildSpec" class="ghost-button" type="button">
+                  Generate Vibe Spec
+                </button>
+                <button id="vibeConfirmAct" class="primary" type="button">
+                  Confirm Spec -> Act
+                </button>
+              </div>
+            </div>
+            <div id="vibeTranscript" class="vibe-transcript hidden"></div>
+            <textarea
+              id="prompt"
+              rows="7"
+              placeholder="Ask for a review, scaffold a repository, or switch to Agent mode to act in the workspace."
+            ></textarea>
+            <div class="send-row">
+              <div class="intent-inline">
+                <strong>Execution</strong>
+                <span id="executionModeLabel">Plan only</span>
+                <input id="executionMode" type="range" min="0" max="1" step="1" value="0" />
+                <span class="intent-end">Plan</span>
+                <span class="intent-end">Act</span>
+              </div>
+              <label class="pause-toggle">
+                <input id="pauseAfterSpec" type="checkbox" />
+                <span>Pause After Spec</span>
+              </label>
+              <div class="send-actions">
+                <button id="buildSpec" class="ghost-button">Build Spec</button>
+                <button id="refinePrompt" class="ghost-button">Refine Prompt</button>
+                <span id="status" class="status">Ready</span>
+                <button id="send" class="primary">Send</button>
+              </div>
+            </div>
+          </section>
+        </main>
+
+        <aside class="right-rail panel">
+          <details class="settings-card" open>
+            <summary>Workflow</summary>
+            <div id="workflowSummary" class="info-card"></div>
+            <div id="quickActions" class="quick-actions"></div>
+          </details>
+
+          <details class="settings-card">
+            <summary>Model Roles</summary>
+            <div class="settings-grid">
+              <label>
+                <span>Chat</span>
+                <select id="modelRoleChat"></select>
+              </label>
+              <label>
+                <span>Builder</span>
+                <select id="modelRoleBuilder"></select>
+              </label>
+              <label>
+                <span>Reviewer</span>
+                <select id="modelRoleReviewer"></select>
+              </label>
+              <label>
+                <span>Refiner</span>
+                <select id="modelRoleRefiner"></select>
+              </label>
+              <label>
+                <span>Editor</span>
+                <select id="modelRoleEditor"></select>
+              </label>
+            </div>
+            <div class="settings-actions">
+              <button id="saveModelRoles">Save Roles</button>
+            </div>
+          </details>
+
+          <details class="settings-card">
+            <summary>Runtime Defaults</summary>
+            <div class="settings-grid">
+              <label>
+                <span>Chat Temperature</span>
+                <input id="chatTemperature" type="number" min="0" max="2" step="0.05" />
+              </label>
+              <label>
+                <span>Chat Top P</span>
+                <input id="chatTopP" type="number" min="0.1" max="1" step="0.05" />
+              </label>
+              <label>
+                <span>Chat Max Tokens</span>
+                <input id="chatMaxTokens" type="number" min="256" max="8192" step="128" />
+              </label>
+              <label>
+                <span>Agent Temperature</span>
+                <input id="agentTemperature" type="number" min="0" max="2" step="0.05" />
+              </label>
+              <label>
+                <span>Agent Top P</span>
+                <input id="agentTopP" type="number" min="0.1" max="1" step="0.05" />
+              </label>
+              <label>
+                <span>Agent Max Tokens</span>
+                <input id="agentMaxTokens" type="number" min="256" max="8192" step="128" />
+              </label>
+            </div>
+            <div class="settings-actions">
+              <button id="saveGenerationSettings">Save Defaults</button>
+              <button id="resetGenerationSettings">Restore Defaults</button>
+            </div>
+          </details>
+
+          <details class="settings-card" open>
+            <summary>Project Intelligence</summary>
+            <div id="projectIntelligenceSummary" class="info-card"></div>
+          </details>
+
+          <details class="settings-card" open>
+            <summary>Validation</summary>
+            <div id="validationSummary" class="info-card"></div>
+          </details>
+
+          <details class="settings-card">
+            <summary>Context</summary>
+            <div class="context-grid">
+              <div>
+                <span class="label">Project Root</span>
+                <code id="contextProjectRoot">None</code>
+              </div>
+              <div>
+                <span class="label">Target Folder</span>
+                <code id="contextTargetPath">None</code>
+              </div>
+              <div>
+                <span class="label">Editor File</span>
+                <code id="contextEditorFile">None</code>
+              </div>
+              <div>
+                <span class="label">Bridge File</span>
+                <code id="contextBridgePath">None</code>
+              </div>
+            </div>
+          </details>
+        </aside>
+      </div>
+
+      <section class="drawer panel">
+        <div class="panel-header">
+          <strong>Run Workspace</strong>
+          <span id="runSummary" class="drawer-status">No active runs</span>
+        </div>
+        <div class="drawer-tabs">
+          <button class="tab-button active" data-tab="spec">Spec</button>
+          <button class="tab-button" data-tab="run">Run</button>
+          <button class="tab-button" data-tab="diff">Diff</button>
+          <button class="tab-button" data-tab="validation">Validation</button>
+        </div>
+        <div class="drawer-panels">
+          <section id="panelSpec" class="drawer-panel active">
+            <div id="specPanel" class="drawer-card"></div>
+          </section>
+          <section id="panelRun" class="drawer-panel">
+            <div id="runPanel" class="drawer-card"></div>
+          </section>
+          <section id="panelDiff" class="drawer-panel">
+            <div id="diffPanel" class="drawer-card"></div>
+          </section>
+          <section id="panelValidation" class="drawer-panel">
+            <div id="validationPanel" class="drawer-card"></div>
+          </section>
+        </div>
+      </section>
+    </div>
+    <script src="./app.js"></script>
+  </body>
+</html>

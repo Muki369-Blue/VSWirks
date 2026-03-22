@@ -1,0 +1,242 @@
+{
+  "name": "bluewirks-local-agent",
+  "displayName": "VSWirks Editor Bridge",
+  "description": "Local-first editor bridge for VSWirks App and ai-runtime inside VSCodium.",
+  "version": "0.0.2",
+  "publisher": "bluewirks",
+  "license": "UNLICENSED",
+  "engines": {
+    "vscode": "^1.110.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onStartupFinished",
+    "onView:bluewirksLocalAgent.chatView",
+    "onChatParticipant:bluewirks.bluewirks-local-agent.local",
+    "onCommand:bluewirksLocalAgent.focus",
+    "onCommand:bluewirksLocalAgent.attachCurrentFile",
+    "onCommand:bluewirksLocalAgent.attachImage",
+    "onCommand:bluewirksLocalAgent.sendSelection",
+    "onCommand:bluewirksLocalAgent.openCompanionApp",
+    "onCommand:bluewirksLocalAgent.setWorkspaceTarget",
+    "onCommand:bluewirksLocalAgent.clearWorkspaceTarget"
+  ],
+  "main": "./extension.js",
+  "contributes": {
+    "chatParticipants": [
+      {
+        "id": "bluewirks.bluewirks-local-agent.local",
+        "name": "local",
+        "fullName": "VSWirks Local",
+        "description": "Local-first workspace chat backed by ai-runtime and VSWirks App.",
+        "isSticky": true,
+        "commands": [
+          {
+            "name": "ask",
+            "description": "Ask the local model about code or the workspace."
+          },
+          {
+            "name": "review",
+            "description": "Review the current file or selection for bugs and risks."
+          },
+          {
+            "name": "explain",
+            "description": "Explain the current file or selection."
+          },
+          {
+            "name": "scaffold",
+            "description": "Scaffold or extend a feature in the workspace."
+          },
+          {
+            "name": "refactor",
+            "description": "Refactor code in the workspace."
+          },
+          {
+            "name": "test",
+            "description": "Generate or update tests."
+          }
+        ]
+      }
+    ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "bluewirksLocalAgent",
+          "title": "VSWirks Editor",
+          "icon": "media/icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "bluewirksLocalAgent": [
+        {
+          "type": "webview",
+          "id": "bluewirksLocalAgent.chatView",
+          "name": "Local Agent"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "bluewirksLocalAgent.focus",
+        "title": "VSWirks Editor: Focus Chat"
+      },
+      {
+        "command": "bluewirksLocalAgent.attachCurrentFile",
+        "title": "VSWirks Editor: Attach Current File"
+      },
+      {
+        "command": "bluewirksLocalAgent.attachImage",
+        "title": "VSWirks Editor: Attach Image"
+      },
+      {
+        "command": "bluewirksLocalAgent.sendSelection",
+        "title": "VSWirks Editor: Send Selection"
+      },
+      {
+        "command": "bluewirksLocalAgent.newChat",
+        "title": "VSWirks Editor: New Chat"
+      },
+      {
+        "command": "bluewirksLocalAgent.openCompanionApp",
+        "title": "VSWirks Editor: Open VSWirks App"
+      },
+      {
+        "command": "bluewirksLocalAgent.setWorkspaceTarget",
+        "title": "VSWirks Editor: Set Agent Target Here"
+      },
+      {
+        "command": "bluewirksLocalAgent.clearWorkspaceTarget",
+        "title": "VSWirks Editor: Clear Agent Target"
+      }
+    ],
+    "menus": {
+      "editor/context": [
+        {
+          "command": "bluewirksLocalAgent.sendSelection",
+          "group": "navigation@90",
+          "when": "editorTextFocus"
+        },
+        {
+          "command": "bluewirksLocalAgent.attachCurrentFile",
+          "group": "navigation@91",
+          "when": "editorTextFocus"
+        }
+      ],
+      "explorer/context": [
+        {
+          "command": "bluewirksLocalAgent.setWorkspaceTarget",
+          "group": "navigation@92",
+          "when": "explorerResourceIsFolder"
+        },
+        {
+          "command": "bluewirksLocalAgent.clearWorkspaceTarget",
+          "group": "navigation@93"
+        }
+      ],
+      "view/title": [
+        {
+          "command": "bluewirksLocalAgent.newChat",
+          "when": "view == bluewirksLocalAgent.chatView",
+          "group": "navigation"
+        },
+        {
+          "command": "bluewirksLocalAgent.openCompanionApp",
+          "when": "view == bluewirksLocalAgent.chatView",
+          "group": "navigation@1"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "VSWirks Editor Bridge",
+      "properties": {
+        "bluewirksLocalAgent.baseUrl": {
+          "type": "string",
+          "default": "http://127.0.0.1:7471/v1",
+          "description": "OpenAI-compatible base URL for the local ai-runtime service."
+        },
+        "bluewirksLocalAgent.defaultModel": {
+          "type": "string",
+          "default": "devstral-small-2",
+          "description": "Default model shown in the sidebar for local edit and scaffold work."
+        },
+        "bluewirksLocalAgent.workspaceTarget": {
+          "type": "string",
+          "default": "",
+          "description": "Absolute folder path used as the agent write target. Set it from the Explorer context menu for subfolder scaffolding."
+        },
+        "bluewirksLocalAgent.runtimeCwd": {
+          "type": "string",
+          "default": "/Users/bluewirks.max/dev/ai-runtime",
+          "description": "Working directory used when starting ai-runtime from the sidebar."
+        },
+        "bluewirksLocalAgent.runtimePython": {
+          "type": "string",
+          "default": "/Users/bluewirks.max/dev/ai-app/.venv/bin/python",
+          "description": "Python binary used to start ai-runtime from the sidebar."
+        },
+        "bluewirksLocalAgent.companionAppPath": {
+          "type": "string",
+          "default": "/Users/bluewirks.max/Documents/VSWirks/vswirks-app",
+          "description": "Source folder or installed app root for the standalone VSWirks App."
+        },
+        "bluewirksLocalAgent.chatTemperature": {
+          "type": "number",
+          "default": 0.2,
+          "minimum": 0,
+          "maximum": 2,
+          "description": "Default chat temperature tuned for local code analysis and scaffolding."
+        },
+        "bluewirksLocalAgent.chatTopP": {
+          "type": "number",
+          "default": 0.9,
+          "minimum": 0.1,
+          "maximum": 1,
+          "description": "Default chat top_p tuned for grounded but flexible local responses."
+        },
+        "bluewirksLocalAgent.chatMaxTokens": {
+          "type": "number",
+          "default": 4096,
+          "minimum": 256,
+          "maximum": 8192,
+          "description": "Default chat max_tokens for longer local review and scaffold responses."
+        },
+        "bluewirksLocalAgent.agentTemperature": {
+          "type": "number",
+          "default": 0.1,
+          "minimum": 0,
+          "maximum": 2,
+          "description": "Default agent temperature tuned for stable multi-step tool use."
+        },
+        "bluewirksLocalAgent.agentTopP": {
+          "type": "number",
+          "default": 0.85,
+          "minimum": 0.1,
+          "maximum": 1,
+          "description": "Default agent top_p tuned for controlled planning and edits."
+        },
+        "bluewirksLocalAgent.agentMaxTokens": {
+          "type": "number",
+          "default": 4096,
+          "minimum": 256,
+          "maximum": 8192,
+          "description": "Default agent max_tokens for longer planning and tool-driven completions."
+        },
+        "bluewirksLocalAgent.agentMaxSteps": {
+          "type": "number",
+          "default": 6,
+          "minimum": 1,
+          "maximum": 12,
+          "description": "Maximum number of agent tool-execution rounds per request."
+        },
+        "bluewirksLocalAgent.writeRequiresApproval": {
+          "type": "boolean",
+          "default": true,
+          "description": "Require confirmation before write_file tool calls modify workspace files."
+        }
+      }
+    }
+  }
+}

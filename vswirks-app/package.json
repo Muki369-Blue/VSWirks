@@ -1,0 +1,16 @@
+{
+  "name": "vswirks-app",
+  "productName": "VSWirks App",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Standalone local-first companion app for VSWirks Editor and ai-runtime.",
+  "main": "electron/main.cjs",
+  "scripts": {
+    "start": "electron electron/main.cjs",
+    "dev": "electron electron/main.cjs",
+    "test": "node --test ./tests/**/*.test.cjs"
+  },
+  "dependencies": {
+    "electron": "^36.3.2"
+  }
+}

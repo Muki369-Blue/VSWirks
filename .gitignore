@@ -1,0 +1,6 @@
+.git.vscodium.bak.*
+.DS_Store
+*.bak.*
+vswirks-app/node_modules/
+vswirks-app/dist/
+vswirks-app/out/

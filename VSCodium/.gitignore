@@ -1,0 +1,6 @@
+*.bak.*
+.DS_Store
+.extension.js.swp
+vswirks-app/node_modules/
+vswirks-app/dist/
+vswirks-app/out/
