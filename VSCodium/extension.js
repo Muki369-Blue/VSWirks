@@ -19,6 +19,17 @@ const {
   isIgnoredWorkspacePath,
   isSkippableWorkspaceRootEntry: sharedIsSkippableWorkspaceRootEntry
 } = require("../shared/workspace-filters");
+const {
+  delay: sharedDelay,
+  clampNumber: sharedClampNumber,
+  normalizeExecutionMode: sharedNormalizeExecutionMode,
+  normalizeWriteApprovalMode: sharedNormalizeWriteApprovalMode,
+  makeId: sharedMakeId,
+  safeJsonParse: sharedSafeJsonParse,
+  limitText: sharedLimitText,
+  titleFromPrompt: sharedTitleFromPrompt,
+  looksLikeRepoCreationRequest: sharedLooksLikeRepoCreationRequest
+} = require("../shared/core");
 
 const VIEW_ID = "bluewirksLocalAgent.chatView";
 const CONTAINER_ID = "bluewirksLocalAgent";
@@ -2508,16 +2519,7 @@ function isSkippableWorkspaceRootEntry(entry) {
   return sharedIsSkippableWorkspaceRootEntry(name);
 }
 
-function looksLikeRepoCreationRequest(prompt, workspaceEmpty) {
-  const text = String(prompt || "").toLowerCase();
-  const createVerb = /(create|build|scaffold|start|initialize|bootstrap|make|develop|generate)/.test(
-    text
-  );
-  const repoSignal =
-    /(repo|repository|project|app|application|tool|service|cli|package|workspace)/.test(text) ||
-    Boolean(workspaceEmpty);
-  return createVerb && repoSignal;
-}
+const looksLikeRepoCreationRequest = sharedLooksLikeRepoCreationRequest;
 
 async function tryMaterializeActReply({
   model,
@@ -3853,11 +3855,7 @@ async function spawnDetachedProcess(command, args, cwd) {
   });
 }
 
-function delay(ms) {
-  return new Promise((resolve) => {
-    setTimeout(resolve, ms);
-  });
-}
+const delay = sharedDelay;
 
 async function requestWriteApproval(relativePath, options) {
   const currentMode = normalizeWriteApprovalMode(options && options.currentMode);
@@ -3888,21 +3886,9 @@ async function requestWriteApproval(relativePath, options) {
   };
 }
 
-function normalizeExecutionMode(value) {
-  return value === "act" ? "act" : DEFAULT_EXECUTION_MODE;
-}
-
-function normalizeWriteApprovalMode(value) {
-  return value === "chat" ? "chat" : "ask";
-}
-
-function clampNumber(value, min, max, fallbackValue) {
-  const parsed = Number(value);
-  if (!Number.isFinite(parsed)) {
-    return fallbackValue;
-  }
-  return Math.max(min, Math.min(max, parsed));
-}
+const normalizeExecutionMode = sharedNormalizeExecutionMode;
+const normalizeWriteApprovalMode = sharedNormalizeWriteApprovalMode;
+const clampNumber = sharedClampNumber;
 
 function timestamp() {
   const now = new Date();
@@ -3918,13 +3904,7 @@ function timestamp() {
   return parts.join("");
 }
 
-function safeJsonParse(text) {
-  try {
-    return JSON.parse(text);
-  } catch {
-    return {};
-  }
-}
+const safeJsonParse = sharedSafeJsonParse;
 
 function toErrorMessage(error) {
   if (error instanceof Error) {
@@ -4024,17 +4004,8 @@ function normalizeMessage(message) {
   };
 }
 
-function makeId(prefix) {
-  return `${prefix}-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
-}
-
-function titleFromPrompt(prompt) {
-  const cleaned = String(prompt || "").replace(/\s+/g, " ").trim();
-  if (!cleaned) {
-    return "New chat";
-  }
-  return cleaned.length > 56 ? `${cleaned.slice(0, 53)}...` : cleaned;
-}
+const makeId = sharedMakeId;
+const titleFromPrompt = sharedTitleFromPrompt;
 
 function touchThread(threads, threadId) {
   const index = threads.findIndex((entry) => entry.id === threadId);
@@ -4065,13 +4036,7 @@ function getLatestAssistantMessage(messages) {
   return null;
 }
 
-function limitText(text) {
-  const normalized = typeof text === "string" ? text : String(text || "");
-  if (normalized.length <= MAX_TOOL_DETAIL_CHARS) {
-    return normalized;
-  }
-  return `${normalized.slice(0, MAX_TOOL_DETAIL_CHARS - 3)}...`;
-}
+const limitText = sharedLimitText;
 
 function deactivate() {}
 
