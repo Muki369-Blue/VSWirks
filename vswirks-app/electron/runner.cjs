@@ -5,6 +5,7 @@ const { spawnSync } = require("node:child_process");
 const {
   DEFAULT_SYSTEM_PROMPT,
   WORKSPACE_INSTRUCTIONS_PATH,
+  MAX_API_MESSAGES,
   makeId,
   titleFromPrompt,
   clampText,
@@ -25,6 +26,20 @@ const {
   scanProjectIntelligence,
   openInVSWirksEditor
 } = require("./workspace-tools.cjs");
+
+/**
+ * Trim a messages array to fit within MAX_API_MESSAGES while preserving the
+ * system message (first) and the most recent conversation turns. Older
+ * assistant/tool/user pairs in the middle are dropped.
+ */
+function trimMessagesForApi(messages) {
+  if (messages.length <= MAX_API_MESSAGES) {
+    return messages;
+  }
+  const head = messages[0] && messages[0].role === "system" ? [messages[0]] : [];
+  const keep = MAX_API_MESSAGES - head.length;
+  return head.concat(messages.slice(-keep));
+}
 
 const REPO_MANIFEST_PATHS = new Set([
   "package.json",
@@ -421,7 +436,7 @@ async function runChatMode({
       model,
       stream: true,
       ...getGenerationOptions("chat", generationSettings),
-      messages,
+      messages: trimMessagesForApi(messages),
       stream_options: {
         include_usage: true
       }
@@ -526,6 +541,9 @@ async function runAgentMode({
   let runApprovalMode = "ask";
 
   for (let step = 0; step < maxSteps; step += 1) {
+    if (signal && signal.aborted) {
+      break;
+    }
     assistant.status = `${thread.executionMode === "act" ? "Agent" : "Plan"} step ${step + 1} of ${maxSteps}`;
     emitRunEvent(onRunEvent, {
       type: "context",
@@ -546,7 +564,7 @@ async function runAgentMode({
         model,
         stream: false,
         ...getGenerationOptions("agent", generationSettings),
-        messages,
+        messages: trimMessagesForApi(messages),
         tools: getWorkspaceToolsForExecution(thread.executionMode)
       },
       signal
@@ -851,6 +869,7 @@ async function maybeRunStagedScaffoldMode({
       generationSettings,
       workspaceRoot,
       fetchJson,
+      signal,
       writeRequiresApproval,
       requestApproval,
       onState,
@@ -932,6 +951,7 @@ async function runScaffoldPhase({
   generationSettings,
   workspaceRoot,
   fetchJson,
+  signal,
   writeRequiresApproval,
   requestApproval,
   onState,
@@ -983,6 +1003,9 @@ async function runScaffoldPhase({
   });
 
   for (let step = 0; step < phase.maxSteps; step += 1) {
+    if (signal && signal.aborted) {
+      break;
+    }
     const phaseStep = phaseIndex * 10 + step + 1;
     assistant.status = `${phase.label} step ${step + 1} of ${phase.maxSteps}`;
     if (onStatus) {
@@ -1001,7 +1024,7 @@ async function runScaffoldPhase({
       model,
       stream: false,
       ...getGenerationOptions("agent", generationSettings),
-      messages,
+      messages: trimMessagesForApi(messages),
       tools: getAgentTools()
     });
     const choice = response && response.choices && response.choices[0];

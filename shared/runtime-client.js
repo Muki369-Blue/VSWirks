@@ -8,6 +8,8 @@ const {
 } = require("./core");
 
 const RUNTIME_JSON_REQUEST_TIMEOUT_MS = 15 * 60 * 1000;
+const TRANSIENT_RETRY_MAX = 3;
+const TRANSIENT_RETRY_BASE_MS = 800;
 
 function normalizeBaseUrl(baseUrl) {
   const normalized = String(baseUrl || DEFAULT_RUNTIME_BASE_URL).trim();
@@ -133,15 +135,50 @@ function requestRuntimeText(baseUrl, endpoint, body, signal) {
   });
 }
 
-async function fetchRuntimeJson(baseUrl, endpoint, body, signal) {
-  const text = await requestRuntimeText(baseUrl, endpoint, body, signal);
-  try {
-    return JSON.parse(text);
-  } catch (error) {
-    throw new Error(
-      `Runtime returned invalid JSON: ${error instanceof Error ? error.message : String(error)}`
-    );
+function isTransientError(error) {
+  if (!error) {
+    return false;
   }
+  if (error.name === "AbortError") {
+    return false;
+  }
+  const msg = String(error.message || "").toLowerCase();
+  if (
+    msg.includes("econnrefused") ||
+    msg.includes("econnreset") ||
+    msg.includes("upstream unavailable") ||
+    msg.includes("socket hang up") ||
+    /\b(429|502|503|504)\b/.test(msg)
+  ) {
+    return true;
+  }
+  return false;
+}
+
+async function fetchRuntimeJson(baseUrl, endpoint, body, signal) {
+  let lastError;
+  for (let attempt = 0; attempt < TRANSIENT_RETRY_MAX; attempt += 1) {
+    if (signal && signal.aborted) {
+      const abortError = new Error("This operation was aborted");
+      abortError.name = "AbortError";
+      throw abortError;
+    }
+    try {
+      const text = await requestRuntimeText(baseUrl, endpoint, body, signal);
+      return JSON.parse(text);
+    } catch (error) {
+      lastError = error;
+      if (!isTransientError(error) || attempt === TRANSIENT_RETRY_MAX - 1) {
+        break;
+      }
+      const backoff = TRANSIENT_RETRY_BASE_MS * Math.pow(2, attempt) * (0.5 + Math.random() * 0.5);
+      await delay(backoff);
+    }
+  }
+  if (lastError && String(lastError.message || "").includes("invalid JSON")) {
+    throw lastError;
+  }
+  throw lastError || new Error("fetchRuntimeJson failed after retries");
 }
 
 async function streamRuntimeChat(baseUrl, body, signal, handlers = {}) {
@@ -231,9 +268,12 @@ module.exports = {
   getRuntimeServiceUrl,
   fetchRuntimeRaw,
   fetchRuntimeJson,
+  isTransientError,
   requestRuntimeText,
   streamRuntimeChat,
   probeRuntimeHealth,
   waitForRuntimeHealthy,
-  RUNTIME_JSON_REQUEST_TIMEOUT_MS
+  RUNTIME_JSON_REQUEST_TIMEOUT_MS,
+  TRANSIENT_RETRY_MAX,
+  TRANSIENT_RETRY_BASE_MS
 };

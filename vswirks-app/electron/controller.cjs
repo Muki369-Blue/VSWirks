@@ -1045,6 +1045,22 @@ class VSWirksController {
       }
 
       await this.refreshProjectIntelligence(project, false);
+      if (!this.serviceState.healthy) {
+        await this.refreshRuntimeState(false);
+        if (!this.serviceState.healthy) {
+          this.emitEvent({
+            type: "error",
+            message: "ai-runtime is offline. Start the service before sending a prompt."
+          });
+          runRecord.status = "failed";
+          runRecord.summary = "ai-runtime offline";
+          runRecord.finishedAt = Date.now();
+          project.currentRunStatus = "Runtime offline";
+          await this.persistState();
+          this.postState();
+          return false;
+        }
+      }
       this.abortController = new AbortController();
       this.lastStatus = executionMode === "act" ? "Running workflow" : "Planning";
       this.postState();
@@ -1654,12 +1670,16 @@ class VSWirksController {
       await this.refreshRuntimeState(true);
       return true;
     } catch (error) {
+      const errorMsg = error instanceof Error ? error.message : String(error);
+      const isTransient = /econnrefused|timeout|upstream unavailable/i.test(errorMsg);
       this.serviceState = {
         healthy: false,
         starting: false,
-        label: "Service offline"
+        label: isTransient ? "Service offline – retryable" : "Service offline"
       };
-      this.lastStatus = `Start failed: ${error instanceof Error ? error.message : String(error)}`;
+      this.lastStatus = isTransient
+        ? `Start failed (retryable): ${errorMsg}. Click Start again or check that ai-runtime is installed.`
+        : `Start failed: ${errorMsg}`;
       this.emitEvent({
         type: "error",
         message: this.lastStatus
