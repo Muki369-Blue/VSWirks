@@ -309,6 +309,7 @@ test("sendPrompt can reuse an existing spec without regenerating it", async () =
   thread.executionMode = "act";
   controller.projects = [project];
   controller.activeProjectId = project.id;
+  controller.serviceState = { healthy: true, starting: false, label: "Service ready" };
   controller.refreshProjectIntelligence = async () => ({});
   controller.finalizeValidationIfNeeded = async () => {};
   controller.revealRunOutputs = async () => {};
