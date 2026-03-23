@@ -22,7 +22,8 @@
 html,
 body {
   margin: 0;
-  min-height: 100%;
+  height: 100%;
+  overflow: hidden;
   background:
     radial-gradient(circle at top left, rgba(208, 138, 61, 0.14), transparent 34%),
     radial-gradient(circle at 88% 12%, rgba(103, 162, 214, 0.1), transparent 26%),
@@ -67,10 +68,11 @@ textarea:disabled {
 
 .shell {
   display: grid;
-  grid-template-rows: auto auto minmax(0, 1fr) auto;
+  grid-template-rows: auto auto minmax(0, 1fr) minmax(0, 240px);
   height: 100vh;
   gap: 12px;
   padding: 12px;
+  overflow: hidden;
 }
 
 .topbar,
@@ -93,6 +95,8 @@ textarea:disabled {
   display: flex;
   flex-direction: column;
   gap: 4px;
+  flex-shrink: 0;
+  min-width: 0;
 }
 
 .eyebrow {
@@ -109,6 +113,9 @@ textarea:disabled {
 
 .subtitle {
   color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .accent-button {
@@ -126,6 +133,9 @@ textarea:disabled {
 
 .topbar-controls {
   justify-content: flex-end;
+  flex-wrap: wrap;
+  flex-shrink: 1;
+  min-width: 0;
 }
 
 .bridge-strip {
@@ -155,6 +165,7 @@ textarea:disabled {
   display: flex;
   flex-direction: column;
   gap: 14px;
+  overflow-y: auto;
 }
 
 .center-pane {
@@ -216,6 +227,8 @@ textarea:disabled {
   font-family: "SF Mono", "Menlo", monospace;
   font-size: 12px;
   white-space: pre-wrap;
+  max-height: 120px;
+  overflow-y: auto;
 }
 
 .project-list,
@@ -319,6 +332,9 @@ code {
 .message-card,
 .tool-card {
   padding: 14px;
+  overflow-wrap: break-word;
+  word-break: break-word;
+  min-width: 0;
 }
 
 .message-card.user {
@@ -363,6 +379,10 @@ code {
   border: 1px solid var(--border);
   color: var(--text);
   font-size: 11px;
+  max-width: 280px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .pill.muted {
@@ -384,6 +404,13 @@ code {
   background: rgba(215, 117, 117, 0.14);
 }
 
+.message-body,
+.drawer-rich {
+  overflow-wrap: break-word;
+  word-break: break-word;
+  min-width: 0;
+}
+
 .message-body p,
 .drawer-rich p {
   line-height: 1.5;
@@ -401,6 +428,7 @@ code {
   background: rgba(255, 255, 255, 0.06);
   padding: 1px 5px;
   border-radius: 6px;
+  word-break: break-all;
 }
 
 .code-block {
@@ -427,6 +455,7 @@ code {
 .info-pre {
   margin: 0;
   overflow: auto;
+  max-height: 320px;
   padding: 12px;
   font-family: "SF Mono", "Menlo", monospace;
   font-size: 12px;
@@ -449,7 +478,9 @@ code {
 
 .composer {
   display: grid;
-  gap: 12px;
+  gap: 10px;
+  max-height: 340px;
+  overflow-y: auto;
 }
 
 .composer-actions {
@@ -460,7 +491,8 @@ code {
 
 textarea {
   width: 100%;
-  min-height: 170px;
+  min-height: 80px;
+  max-height: 200px;
   resize: vertical;
   padding: 14px;
   background: var(--surface-strong);
@@ -585,11 +617,16 @@ textarea {
 .info-card,
 .drawer-card {
   padding: 12px;
+  overflow-wrap: break-word;
+  word-break: break-word;
+  min-width: 0;
 }
 
 .drawer {
   display: grid;
-  gap: 12px;
+  gap: 10px;
+  overflow: hidden;
+  min-height: 0;
 }
 
 .drawer-tabs {
@@ -604,6 +641,7 @@ textarea {
 
 .drawer-panels {
   min-height: 0;
+  overflow: hidden;
 }
 
 .drawer-panel {
@@ -613,6 +651,8 @@ textarea {
 
 .drawer-panel.active {
   display: block;
+  overflow-y: auto;
+  max-height: 180px;
 }
 
 .timeline,
@@ -663,8 +703,53 @@ textarea {
 }
 
 .focus-chat .drawer {
-  max-height: 180px;
-  overflow: auto;
+  max-height: 200px;
+  overflow: hidden;
+}
+
+.focus-chat .drawer .drawer-panel.active {
+  max-height: 120px;
+}
+
+/* ── Scrollbar styling ───────────────────────────────── */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.14);
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.24);
+}
+
+/* ── Visual clarity helpers ──────────────────────────── */
+.panel-header strong {
+  font-size: 13px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.settings-card summary {
+  border-bottom: 1px solid var(--border);
+}
+
+.settings-card[open] summary {
+  border-bottom-color: rgba(255, 255, 255, 0.06);
+}
+
+.message-card .message-header {
+  margin-bottom: 8px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
 }
 
 a {
