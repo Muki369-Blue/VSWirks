@@ -1,0 +1,23 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "ai-runtime",
+      "runtimeExecutable": "/bin/sh",
+      "runtimeArgs": ["-c", "cd /Users/bluewirks.max/dev/ai-runtime && /Users/bluewirks.max/dev/ai-app/.venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 7471"],
+      "port": 7471
+    },
+    {
+      "name": "vswirks-app",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "dev"],
+      "port": 0
+    },
+    {
+      "name": "stem-splitter",
+      "runtimeExecutable": "python",
+      "runtimeArgs": ["-m", "uvicorn", "stem_splitter.main:app", "--host", "127.0.0.1", "--port", "8000"],
+      "port": 8000
+    }
+  ]
+}

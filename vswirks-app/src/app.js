@@ -67,6 +67,7 @@
     app: document.getElementById("app"),
     mode: document.getElementById("mode"),
     workflowPreset: document.getElementById("workflowPreset"),
+    agentProfile: document.getElementById("agentProfile"),
     model: document.getElementById("model"),
     refreshModels: document.getElementById("refreshModels"),
     focusChat: document.getElementById("focusChat"),
@@ -111,6 +112,31 @@
     modelRoleRefiner: document.getElementById("modelRoleRefiner"),
     modelRoleEditor: document.getElementById("modelRoleEditor"),
     saveModelRoles: document.getElementById("saveModelRoles"),
+    projectDefaultAgentProfile: document.getElementById("projectDefaultAgentProfile"),
+    defaultAgentProfile: document.getElementById("defaultAgentProfile"),
+    globalSystemPrompt: document.getElementById("globalSystemPrompt"),
+    threadSystemPromptOverride: document.getElementById("threadSystemPromptOverride"),
+    savePromptingSettings: document.getElementById("savePromptingSettings"),
+    saveThreadPrompting: document.getElementById("saveThreadPrompting"),
+    nextRunModel: document.getElementById("nextRunModel"),
+    nextRunSystemPrompt: document.getElementById("nextRunSystemPrompt"),
+    refreshPromptPreview: document.getElementById("refreshPromptPreview"),
+    promptPreview: document.getElementById("promptPreview"),
+    agentProfileEditor: document.getElementById("agentProfileEditor"),
+    agentProfileLabel: document.getElementById("agentProfileLabel"),
+    agentProfileDescription: document.getElementById("agentProfileDescription"),
+    agentProfilePreferredRole: document.getElementById("agentProfilePreferredRole"),
+    agentProfileDefaultMode: document.getElementById("agentProfileDefaultMode"),
+    agentProfileDefaultExecutionMode: document.getElementById("agentProfileDefaultExecutionMode"),
+    agentProfileLinkedWorkflow: document.getElementById("agentProfileLinkedWorkflow"),
+    agentProfileModelOverride: document.getElementById("agentProfileModelOverride"),
+    agentProfilePromptPrefix: document.getElementById("agentProfilePromptPrefix"),
+    agentProfileSystemPrompt: document.getElementById("agentProfileSystemPrompt"),
+    agentProfileEnabled: document.getElementById("agentProfileEnabled"),
+    newAgentProfile: document.getElementById("newAgentProfile"),
+    duplicateAgentProfile: document.getElementById("duplicateAgentProfile"),
+    saveAgentProfile: document.getElementById("saveAgentProfile"),
+    deleteAgentProfile: document.getElementById("deleteAgentProfile"),
     chatTemperature: document.getElementById("chatTemperature"),
     chatTopP: document.getElementById("chatTopP"),
     chatMaxTokens: document.getElementById("chatMaxTokens"),
@@ -125,6 +151,11 @@
     contextTargetPath: document.getElementById("contextTargetPath"),
     contextEditorFile: document.getElementById("contextEditorFile"),
     contextBridgePath: document.getElementById("contextBridgePath"),
+    progressBar: document.getElementById("progressBar"),
+    progressFill: document.getElementById("progressFill"),
+    progressLabel: document.getElementById("progressLabel"),
+    progressDetail: document.getElementById("progressDetail"),
+    progressElapsed: document.getElementById("progressElapsed"),
     runSummary: document.getElementById("runSummary"),
     specPanel: document.getElementById("specPanel"),
     runPanel: document.getElementById("runPanel"),
@@ -135,7 +166,11 @@
       spec: document.getElementById("panelSpec"),
       run: document.getElementById("panelRun"),
       diff: document.getElementById("panelDiff"),
-      validation: document.getElementById("panelValidation")
+      validation: document.getElementById("panelValidation"),
+      workflow: document.getElementById("panelWorkflow"),
+      intelligence: document.getElementById("panelIntelligence"),
+      settings: document.getElementById("panelSettings"),
+      context: document.getElementById("panelContext")
     }
   };
 
@@ -163,7 +198,10 @@
         reviewer: "",
         refiner: "",
         editor: ""
-      }
+      },
+      globalSystemPrompt: "",
+      agentProfiles: [],
+      defaultAgentProfileId: ""
     },
     pending: false,
     promptRefining: false,
@@ -171,7 +209,27 @@
     pendingApproval: null
   };
 
+  const oneShotOverrides = {
+    model: "",
+    systemPrompt: ""
+  };
+  const profileEditor = {
+    activeId: "",
+    draft: null
+  };
+  let promptPreviewText = "Prompt preview will appear here.";
+  let lastHydratedThreadId = "";
+  let lastHydratedDraftPrompt = "";
+  let draftSyncHandle = null;
+
   let drawerTab = persisted.drawerTab || "spec";
+  const progress = {
+    startedAt: 0,
+    timer: null,
+    lastLabel: "",
+    history: []
+  };
+
   const vibe = {
     supported: Boolean(SpeechRecognitionConstructor),
     listening: false,
@@ -192,25 +250,92 @@
   }
 
   api.onState((payload) => {
+    const wasPending = state.pending;
     state = {
       ...state,
       ...payload
     };
+    hydratePromptDraftFromState();
+    // Track progress transitions
+    if (state.pending && !wasPending) {
+      startProgress();
+    } else if (!state.pending && wasPending) {
+      stopProgress();
+    }
+    if (state.pending && state.statusText && state.statusText !== progress.lastLabel) {
+      updateProgress(state.statusText);
+    }
     render();
   });
 
   api.onEvent((payload) => {
     if (payload && payload.type === "error") {
       state.statusText = payload.message;
+      updateProgress(payload.message);
       renderStatus();
     }
   });
+
+  function startProgress() {
+    progress.startedAt = Date.now();
+    progress.history = [];
+    progress.lastLabel = "";
+    updateProgress("Thinking...");
+    if (progress.timer) clearInterval(progress.timer);
+    progress.timer = setInterval(() => {
+      renderProgressElapsed();
+    }, 1000);
+  }
+
+  function stopProgress() {
+    if (progress.timer) {
+      clearInterval(progress.timer);
+      progress.timer = null;
+    }
+    elements.progressBar.classList.add("hidden");
+  }
+
+  function updateProgress(label) {
+    if (!label || label === progress.lastLabel) return;
+    progress.lastLabel = label;
+    progress.history.push({ label, at: Date.now() });
+    elements.progressBar.classList.remove("hidden");
+    elements.progressLabel.textContent = classifyStatus(label);
+    elements.progressDetail.textContent = label;
+    elements.progressDetail.title = label;
+    renderProgressElapsed();
+  }
+
+  function renderProgressElapsed() {
+    if (!progress.startedAt) return;
+    const seconds = Math.floor((Date.now() - progress.startedAt) / 1000);
+    const m = Math.floor(seconds / 60);
+    const s = seconds % 60;
+    elements.progressElapsed.textContent = m > 0
+      ? `${m}m ${String(s).padStart(2, "0")}s`
+      : `${s}s`;
+  }
+
+  function classifyStatus(text) {
+    const t = (text || "").toLowerCase();
+    if (/stream|generat|complet/i.test(t)) return "Generating";
+    if (/scaffold|material/i.test(t)) return "Scaffolding";
+    if (/spec|refin/i.test(t)) return "Spec";
+    if (/valid|lint|test/i.test(t)) return "Validating";
+    if (/writ|patch|apply/i.test(t)) return "Writing files";
+    if (/retr|recov|repair/i.test(t)) return "Retrying";
+    if (/paus/i.test(t)) return "Paused";
+    if (/error|fail/i.test(t)) return "Error";
+    if (/phase/i.test(t)) return "Phase";
+    return "Working";
+  }
 
   function render() {
     syncTopbarControls();
     renderTabs();
     renderModels();
     renderWorkflowPresets();
+    renderAgentSelectors();
     renderProjects();
     renderThreads();
     renderBridge();
@@ -239,6 +364,22 @@
     renderExecutionMode();
   }
 
+  function hydratePromptDraftFromState() {
+    const activeThread = getActiveThread();
+    if (!activeThread) {
+      return;
+    }
+    const draftPrompt = typeof activeThread.draftPrompt === "string" ? activeThread.draftPrompt : "";
+    if (
+      activeThread.id !== lastHydratedThreadId ||
+      (draftPrompt && draftPrompt !== lastHydratedDraftPrompt && !elements.prompt.value.trim())
+    ) {
+      elements.prompt.value = draftPrompt;
+      lastHydratedThreadId = activeThread.id;
+      lastHydratedDraftPrompt = draftPrompt;
+    }
+  }
+
   function renderTabs() {
     elements.tabButtons.forEach((button) => {
       const active = button.dataset.tab === drawerTab;
@@ -255,7 +396,7 @@
     elements.model.innerHTML = "";
     const autoOption = document.createElement("option");
     autoOption.value = AUTO_MODEL_VALUE;
-    autoOption.textContent = "Auto (MLX for planning / qwen coder for act)";
+    autoOption.textContent = "Auto (app-owned model routing)";
     elements.model.appendChild(autoOption);
     const models = [...new Set(state.models || [])];
     if (!models.length && state.settings.defaultModel) {
@@ -299,6 +440,50 @@
           `<div class="meta">Completion: ${selectedPreset.completionContract || "none"}</div>`
         ].join("")
       : '<div class="meta">No workflow presets loaded.</div>';
+  }
+
+  function renderAgentSelectors() {
+    const profiles = normalizeAgentProfiles(state.settings.agentProfiles);
+    const projectDefault =
+      state.activeProject && state.activeProject.defaultAgentProfileId
+        ? state.activeProject.defaultAgentProfileId
+        : state.settings.defaultAgentProfileId || "";
+    const thread = getActiveThread();
+    const threadAgentProfileId =
+      thread && thread.agentProfileId ? thread.agentProfileId : projectDefault;
+
+    renderAgentSelect(elements.agentProfile, threadAgentProfileId, profiles, true);
+    renderAgentSelect(elements.projectDefaultAgentProfile, projectDefault, profiles, false);
+    renderAgentSelect(
+      elements.defaultAgentProfile,
+      state.settings.defaultAgentProfileId || projectDefault,
+      profiles,
+      false
+    );
+    renderAgentSelect(elements.agentProfileEditor, profileEditor.activeId || threadAgentProfileId, profiles, false);
+
+    elements.threadSystemPromptOverride.value =
+      thread && typeof thread.systemPromptOverride === "string" ? thread.systemPromptOverride : "";
+    elements.globalSystemPrompt.value = state.settings.globalSystemPrompt || "";
+
+    if (!profileEditor.draft || !profiles.some((profile) => profile.id === profileEditor.activeId)) {
+      profileEditor.activeId =
+        elements.agentProfileEditor.value || threadAgentProfileId || (profiles[0] && profiles[0].id) || "";
+      profileEditor.draft = cloneAgentProfile(findAgentProfile(profileEditor.activeId, profiles));
+    }
+    renderModelSelect(elements.nextRunModel, oneShotOverrides.model, true);
+    renderModelSelect(
+      elements.agentProfileModelOverride,
+      profileEditor.draft ? profileEditor.draft.modelOverride || "" : "",
+      true
+    );
+    renderWorkflowSelect(
+      elements.agentProfileLinkedWorkflow,
+      profileEditor.draft ? profileEditor.draft.linkedWorkflowPresetId || "" : ""
+    );
+    syncAgentProfileDraftToForm();
+    elements.nextRunSystemPrompt.value = oneShotOverrides.systemPrompt;
+    elements.promptPreview.textContent = promptPreviewText;
   }
 
   function renderProjects() {
@@ -356,7 +541,13 @@
 
       const meta = document.createElement("div");
       meta.className = "thread-meta";
-      meta.textContent = `${thread.mode} · ${thread.executionMode} · ${thread.workflowPresetId || "freeform"} · ${formatRelativeTime(thread.updatedAt)}`;
+      meta.textContent = [
+        thread.mode,
+        thread.executionMode,
+        thread.agentProfileId || "project agent",
+        thread.workflowPresetId || "freeform",
+        formatRelativeTime(thread.updatedAt)
+      ].join(" · ");
       button.appendChild(meta);
 
       if (thread.lastValidationResult) {
@@ -625,6 +816,133 @@
       element.appendChild(option);
     });
     element.value = current;
+  }
+
+  function renderModelSelect(element, selectedValue, allowAuto = false) {
+    if (!element) {
+      return;
+    }
+    const models = [...new Set(state.models || [])];
+    const current = selectedValue || (allowAuto ? "" : models[0] || "");
+    element.innerHTML = "";
+    if (allowAuto) {
+      const autoOption = document.createElement("option");
+      autoOption.value = "";
+      autoOption.textContent = "Auto";
+      element.appendChild(autoOption);
+    }
+    Array.from(new Set([current, ...models].filter(Boolean))).forEach((model) => {
+      const option = document.createElement("option");
+      option.value = model;
+      option.textContent = model;
+      element.appendChild(option);
+    });
+    element.value = current;
+  }
+
+  function renderWorkflowSelect(element, selectedValue) {
+    if (!element) {
+      return;
+    }
+    const presets = state.activeProject ? state.activeProject.workflowPresets || [] : [];
+    element.innerHTML = "";
+    const autoOption = document.createElement("option");
+    autoOption.value = "";
+    autoOption.textContent = "None";
+    element.appendChild(autoOption);
+    presets.forEach((preset) => {
+      const option = document.createElement("option");
+      option.value = preset.id;
+      option.textContent = preset.label;
+      element.appendChild(option);
+    });
+    element.value = selectedValue || "";
+  }
+
+  function renderAgentSelect(element, selectedValue, profiles, allowAuto) {
+    if (!element) {
+      return;
+    }
+    element.innerHTML = "";
+    if (allowAuto) {
+      const autoOption = document.createElement("option");
+      autoOption.value = "";
+      autoOption.textContent = "Project Default Agent";
+      element.appendChild(autoOption);
+    }
+    profiles.forEach((profile) => {
+      const option = document.createElement("option");
+      option.value = profile.id;
+      option.textContent = profile.enabled === false ? `${profile.label} (disabled)` : profile.label;
+      element.appendChild(option);
+    });
+    const fallback = allowAuto ? "" : profiles[0] ? profiles[0].id : "";
+    element.value =
+      selectedValue && profiles.some((profile) => profile.id === selectedValue)
+        ? selectedValue
+        : fallback;
+  }
+
+  function normalizeAgentProfiles(profiles) {
+    return Array.isArray(profiles) && profiles.length
+      ? profiles
+      : [
+          {
+            id: "app-default",
+            label: "App Default",
+            description: "",
+            preferredRole: "",
+            modelOverride: "",
+            systemPrompt: "",
+            defaultMode: "chat",
+            defaultExecutionMode: "plan",
+            linkedWorkflowPresetId: "",
+            promptPrefix: "",
+            enabled: true
+          }
+        ];
+  }
+
+  function findAgentProfile(agentProfileId, profiles = normalizeAgentProfiles(state.settings.agentProfiles)) {
+    return profiles.find((profile) => profile.id === agentProfileId) || profiles[0] || null;
+  }
+
+  function cloneAgentProfile(profile) {
+    if (!profile) {
+      return {
+        id: `custom-${Date.now()}`,
+        label: "",
+        description: "",
+        preferredRole: "",
+        modelOverride: "",
+        systemPrompt: "",
+        defaultMode: "chat",
+        defaultExecutionMode: "plan",
+        linkedWorkflowPresetId: "",
+        promptPrefix: "",
+        enabled: true
+      };
+    }
+    return {
+      ...profile
+    };
+  }
+
+  function syncAgentProfileDraftToForm() {
+    if (!profileEditor.draft) {
+      return;
+    }
+    elements.agentProfileLabel.value = profileEditor.draft.label || "";
+    elements.agentProfileDescription.value = profileEditor.draft.description || "";
+    elements.agentProfilePreferredRole.value = profileEditor.draft.preferredRole || "";
+    elements.agentProfileDefaultMode.value = profileEditor.draft.defaultMode || "chat";
+    elements.agentProfileDefaultExecutionMode.value =
+      profileEditor.draft.defaultExecutionMode || "plan";
+    elements.agentProfileLinkedWorkflow.value = profileEditor.draft.linkedWorkflowPresetId || "";
+    elements.agentProfileModelOverride.value = profileEditor.draft.modelOverride || "";
+    elements.agentProfilePromptPrefix.value = profileEditor.draft.promptPrefix || "";
+    elements.agentProfileSystemPrompt.value = profileEditor.draft.systemPrompt || "";
+    elements.agentProfileEnabled.checked = profileEditor.draft.enabled !== false;
   }
 
   function renderSpecPanel() {
@@ -903,6 +1221,12 @@
     const hasVoiceDraft = Boolean(vibe.transcript || vibe.interim);
     const activeSpec = getActiveSpec();
     elements.status.textContent = state.statusText || "Ready";
+    // Keep progress bar in sync
+    if (state.pending) {
+      elements.progressBar.classList.remove("hidden");
+    } else {
+      elements.progressBar.classList.add("hidden");
+    }
     elements.send.disabled = state.pending || state.promptRefining || !hasPrompt;
     elements.refinePrompt.disabled = state.pending || state.promptRefining || !hasPrompt;
     elements.buildSpec.disabled = state.pending || !hasPrompt;
@@ -912,6 +1236,31 @@
     elements.vibeConfirmAct.disabled = state.pending || !activeSpec;
     elements.refinePrompt.textContent = state.promptRefining ? "Refining..." : "Refine Prompt";
     elements.stop.classList.toggle("hidden", !state.pending);
+    elements.agentProfile.disabled = state.pending;
+    elements.projectDefaultAgentProfile.disabled = state.pending;
+    elements.defaultAgentProfile.disabled = state.pending;
+    elements.globalSystemPrompt.disabled = state.pending;
+    elements.threadSystemPromptOverride.disabled = state.pending;
+    elements.nextRunModel.disabled = state.pending;
+    elements.nextRunSystemPrompt.disabled = state.pending;
+    elements.refreshPromptPreview.disabled = state.pending;
+    elements.savePromptingSettings.disabled = state.pending;
+    elements.saveThreadPrompting.disabled = state.pending;
+    elements.agentProfileEditor.disabled = state.pending;
+    elements.agentProfileLabel.disabled = state.pending;
+    elements.agentProfileDescription.disabled = state.pending;
+    elements.agentProfilePreferredRole.disabled = state.pending;
+    elements.agentProfileDefaultMode.disabled = state.pending;
+    elements.agentProfileDefaultExecutionMode.disabled = state.pending;
+    elements.agentProfileLinkedWorkflow.disabled = state.pending;
+    elements.agentProfileModelOverride.disabled = state.pending;
+    elements.agentProfilePromptPrefix.disabled = state.pending;
+    elements.agentProfileSystemPrompt.disabled = state.pending;
+    elements.agentProfileEnabled.disabled = state.pending;
+    elements.newAgentProfile.disabled = state.pending;
+    elements.duplicateAgentProfile.disabled = state.pending;
+    elements.saveAgentProfile.disabled = state.pending;
+    elements.deleteAgentProfile.disabled = state.pending;
     elements.startService.disabled = state.pending || state.serviceStarting || state.serviceHealthy;
     elements.startService.textContent = state.serviceHealthy
       ? "Running"
@@ -968,20 +1317,34 @@
     if (!prompt || state.pending) {
       return;
     }
+    const requestOverrides = consumeOneShotOverrides();
     void api.invoke("vswirks:sendPrompt", {
       prompt,
       mode: elements.mode.value,
       executionMode: elements.executionMode.value === "1" ? "act" : "plan",
       workflowPresetId: elements.workflowPreset.value,
-      model: getRequestedModel(),
+      agentProfileId: elements.agentProfile.value,
+      model: requestOverrides.model || getRequestedModel(),
+      systemPromptOverride: requestOverrides.systemPrompt || elements.threadSystemPromptOverride.value,
       pausedAfterSpec: elements.pauseAfterSpec.checked
     });
     elements.prompt.value = "";
+    lastHydratedDraftPrompt = "";
     renderStatus();
   }
 
   function getRequestedModel() {
     return elements.model.value && elements.model.value !== AUTO_MODEL_VALUE ? elements.model.value : "";
+  }
+
+  function consumeOneShotOverrides() {
+    const overrides = {
+      model: oneShotOverrides.model || "",
+      systemPrompt: oneShotOverrides.systemPrompt || ""
+    };
+    oneShotOverrides.model = "";
+    oneShotOverrides.systemPrompt = "";
+    return overrides;
   }
 
   function getActiveThread() {
@@ -1217,9 +1580,66 @@
       mode: elements.mode.value,
       executionMode: elements.executionMode.value === "1" ? "act" : "plan",
       workflowPresetId: elements.workflowPreset.value,
+      agentProfileId: elements.agentProfile.value,
+      systemPromptOverride: elements.threadSystemPromptOverride.value,
       pausedAfterSpec: elements.pauseAfterSpec.checked,
       model: getRequestedModel()
     });
+  }
+
+  function queueDraftSync() {
+    if (draftSyncHandle) {
+      clearTimeout(draftSyncHandle);
+    }
+    draftSyncHandle = setTimeout(() => {
+      draftSyncHandle = null;
+      void api.invoke("vswirks:updateThreadSettings", {
+        draftPrompt: elements.prompt.value
+      });
+      lastHydratedDraftPrompt = elements.prompt.value;
+    }, 150);
+  }
+
+  function readAgentProfileDraftFromForm() {
+    return {
+      ...(profileEditor.draft || {}),
+      id: profileEditor.draft && profileEditor.draft.id ? profileEditor.draft.id : `custom-${Date.now()}`,
+      label: elements.agentProfileLabel.value.trim(),
+      description: elements.agentProfileDescription.value.trim(),
+      preferredRole: elements.agentProfilePreferredRole.value,
+      defaultMode: elements.agentProfileDefaultMode.value,
+      defaultExecutionMode: elements.agentProfileDefaultExecutionMode.value,
+      linkedWorkflowPresetId: elements.agentProfileLinkedWorkflow.value,
+      modelOverride: elements.agentProfileModelOverride.value,
+      promptPrefix: elements.agentProfilePromptPrefix.value.trim(),
+      systemPrompt: elements.agentProfileSystemPrompt.value.trim(),
+      enabled: elements.agentProfileEnabled.checked
+    };
+  }
+
+  function buildPromptingSettingsPayload(nextProfiles) {
+    return {
+      globalSystemPrompt: elements.globalSystemPrompt.value.trim(),
+      defaultAgentProfileId: elements.defaultAgentProfile.value,
+      agentProfiles: nextProfiles || normalizeAgentProfiles(state.settings.agentProfiles)
+    };
+  }
+
+  async function refreshPromptPreview() {
+    const result = await api.invoke("vswirks:getPromptPreview", {
+      prompt: elements.prompt.value.trim(),
+      mode: elements.mode.value,
+      executionMode: elements.executionMode.value === "1" ? "act" : "plan",
+      workflowPresetId: elements.workflowPreset.value,
+      agentProfileId: elements.agentProfile.value,
+      model: oneShotOverrides.model || getRequestedModel(),
+      systemPromptOverride: oneShotOverrides.systemPrompt || elements.threadSystemPromptOverride.value
+    });
+    promptPreviewText =
+      result && result.ok && typeof result.preview === "string"
+        ? result.preview
+        : "Prompt preview is unavailable.";
+    render();
   }
 
   function ensureVibeRecognition() {
@@ -1346,6 +1766,7 @@
     if (!prompt || state.pending) {
       return;
     }
+    const requestOverrides = consumeOneShotOverrides();
     elements.mode.value = "agent";
     elements.executionMode.value = "0";
     elements.pauseAfterSpec.checked = true;
@@ -1358,7 +1779,9 @@
       mode: "agent",
       executionMode: "plan",
       workflowPresetId: elements.workflowPreset.value,
-      model: getRequestedModel()
+      agentProfileId: elements.agentProfile.value,
+      model: requestOverrides.model || getRequestedModel(),
+      systemPromptOverride: requestOverrides.systemPrompt || elements.threadSystemPromptOverride.value
     });
     drawerTab = "spec";
     renderTabs();
@@ -1383,12 +1806,15 @@
     applyPromptPlaceholder();
     rememberUi();
     await syncThreadSettings();
+    const requestOverrides = consumeOneShotOverrides();
     void api.invoke("vswirks:sendPrompt", {
       prompt,
       mode: "agent",
       executionMode: "act",
       workflowPresetId: elements.workflowPreset.value,
-      model: getRequestedModel(),
+      agentProfileId: elements.agentProfile.value,
+      model: requestOverrides.model || getRequestedModel(),
+      systemPromptOverride: requestOverrides.systemPrompt || elements.threadSystemPromptOverride.value,
       pausedAfterSpec: false,
       useActiveSpec: true
     });
@@ -1428,6 +1854,9 @@
   elements.newChat.addEventListener("click", () => {
     void api.invoke("vswirks:newChat", {
       workflowPresetId: elements.workflowPreset.value,
+      agentProfileId: elements.agentProfile.value,
+      modelOverride: getRequestedModel(),
+      systemPromptOverride: elements.threadSystemPromptOverride.value,
       mode: elements.mode.value,
       executionMode: elements.executionMode.value === "1" ? "act" : "plan"
     });
@@ -1461,12 +1890,15 @@
     if (!prompt) {
       return;
     }
+    const requestOverrides = consumeOneShotOverrides();
     void api.invoke("vswirks:buildSpec", {
       prompt,
       mode: elements.mode.value,
       executionMode: elements.executionMode.value === "1" ? "act" : "plan",
       workflowPresetId: elements.workflowPreset.value,
-      model: getRequestedModel()
+      agentProfileId: elements.agentProfile.value,
+      model: requestOverrides.model || getRequestedModel(),
+      systemPromptOverride: requestOverrides.systemPrompt || elements.threadSystemPromptOverride.value
     });
     drawerTab = "spec";
     renderTabs();
@@ -1482,7 +1914,9 @@
       prompt,
       mode: elements.mode.value,
       executionMode: elements.executionMode.value === "1" ? "act" : "plan",
-      model: getRequestedModel()
+      agentProfileId: elements.agentProfile.value,
+      model: oneShotOverrides.model || getRequestedModel(),
+      systemPromptOverride: oneShotOverrides.systemPrompt || elements.threadSystemPromptOverride.value
     });
 
     if (result && result.ok && typeof result.prompt === "string" && result.prompt.trim()) {
@@ -1515,6 +1949,110 @@
   elements.model.addEventListener("change", async () => {
     await syncThreadSettings();
   });
+  elements.agentProfile.addEventListener("change", async () => {
+    await syncThreadSettings();
+    await refreshPromptPreview();
+  });
+  elements.projectDefaultAgentProfile.addEventListener("change", () => {
+    void api.invoke("vswirks:updateProjectSettings", {
+      defaultAgentProfileId: elements.projectDefaultAgentProfile.value
+    });
+  });
+  elements.defaultAgentProfile.addEventListener("change", () => {
+    void api.invoke("vswirks:savePromptingSettings", buildPromptingSettingsPayload());
+  });
+  elements.threadSystemPromptOverride.addEventListener("change", async () => {
+    await syncThreadSettings();
+    await refreshPromptPreview();
+  });
+  elements.nextRunModel.addEventListener("change", () => {
+    oneShotOverrides.model = elements.nextRunModel.value;
+  });
+  elements.nextRunSystemPrompt.addEventListener("input", () => {
+    oneShotOverrides.systemPrompt = elements.nextRunSystemPrompt.value.trim();
+  });
+  elements.refreshPromptPreview.addEventListener("click", () => {
+    void refreshPromptPreview();
+  });
+  elements.savePromptingSettings.addEventListener("click", () => {
+    void api.invoke("vswirks:savePromptingSettings", buildPromptingSettingsPayload());
+  });
+  elements.saveThreadPrompting.addEventListener("click", async () => {
+    await syncThreadSettings();
+    await refreshPromptPreview();
+  });
+  elements.agentProfileEditor.addEventListener("change", () => {
+    profileEditor.activeId = elements.agentProfileEditor.value;
+    profileEditor.draft = cloneAgentProfile(findAgentProfile(profileEditor.activeId));
+    syncAgentProfileDraftToForm();
+  });
+  [
+    elements.agentProfileLabel,
+    elements.agentProfileDescription,
+    elements.agentProfilePreferredRole,
+    elements.agentProfileDefaultMode,
+    elements.agentProfileDefaultExecutionMode,
+    elements.agentProfileLinkedWorkflow,
+    elements.agentProfileModelOverride,
+    elements.agentProfilePromptPrefix,
+    elements.agentProfileSystemPrompt,
+    elements.agentProfileEnabled
+  ].forEach((element) => {
+    const eventName = element.tagName === "SELECT" || element.type === "checkbox" ? "change" : "input";
+    element.addEventListener(eventName, () => {
+      profileEditor.draft = readAgentProfileDraftFromForm();
+    });
+  });
+  elements.newAgentProfile.addEventListener("click", () => {
+    profileEditor.activeId = `custom-${Date.now()}`;
+    profileEditor.draft = cloneAgentProfile({
+      id: profileEditor.activeId,
+      label: "",
+      description: "",
+      preferredRole: "",
+      modelOverride: "",
+      systemPrompt: "",
+      defaultMode: "chat",
+      defaultExecutionMode: "plan",
+      linkedWorkflowPresetId: "",
+      promptPrefix: "",
+      enabled: true
+    });
+    syncAgentProfileDraftToForm();
+  });
+  elements.duplicateAgentProfile.addEventListener("click", () => {
+    const source = readAgentProfileDraftFromForm();
+    profileEditor.activeId = `custom-${Date.now()}`;
+    profileEditor.draft = {
+      ...source,
+      id: profileEditor.activeId,
+      label: source.label ? `${source.label} Copy` : "Copied Agent"
+    };
+    syncAgentProfileDraftToForm();
+  });
+  elements.saveAgentProfile.addEventListener("click", async () => {
+    const nextProfile = readAgentProfileDraftFromForm();
+    const profiles = normalizeAgentProfiles(state.settings.agentProfiles)
+      .filter((profile) => profile.id !== nextProfile.id)
+      .concat(nextProfile);
+    profileEditor.activeId = nextProfile.id;
+    profileEditor.draft = cloneAgentProfile(nextProfile);
+    await api.invoke("vswirks:savePromptingSettings", buildPromptingSettingsPayload(profiles));
+    await refreshPromptPreview();
+  });
+  elements.deleteAgentProfile.addEventListener("click", async () => {
+    const targetId = profileEditor.activeId;
+    if (!targetId) {
+      return;
+    }
+    const profiles = normalizeAgentProfiles(state.settings.agentProfiles).filter(
+      (profile) => profile.id !== targetId
+    );
+    profileEditor.activeId = profiles[0] ? profiles[0].id : "";
+    profileEditor.draft = cloneAgentProfile(findAgentProfile(profileEditor.activeId, profiles));
+    await api.invoke("vswirks:savePromptingSettings", buildPromptingSettingsPayload(profiles));
+    await refreshPromptPreview();
+  });
   elements.saveModelRoles.addEventListener("click", () => {
     void api.invoke("vswirks:saveModelRoles", {
       chat: elements.modelRoleChat.value,
@@ -1545,6 +2083,7 @@
   });
   elements.prompt.addEventListener("input", () => {
     renderStatus();
+    queueDraftSync();
   });
   elements.tabButtons.forEach((button) => {
     button.addEventListener("click", () => {

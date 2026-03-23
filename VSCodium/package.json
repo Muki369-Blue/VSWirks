@@ -47,15 +47,15 @@
           },
           {
             "name": "scaffold",
-            "description": "Scaffold or extend a feature in the workspace."
+            "description": "Hand the workspace into VSWirks App for staged scaffold work."
           },
           {
             "name": "refactor",
-            "description": "Refactor code in the workspace."
+            "description": "Hand broader refactors into VSWirks App."
           },
           {
             "name": "test",
-            "description": "Generate or update tests."
+            "description": "Hand repo-aware test work into VSWirks App."
           }
         ]
       }
@@ -157,11 +157,6 @@
           "default": "http://127.0.0.1:7471/v1",
           "description": "OpenAI-compatible base URL for the local ai-runtime service."
         },
-        "bluewirksLocalAgent.defaultModel": {
-          "type": "string",
-          "default": "devstral-small-2",
-          "description": "Default model shown in the sidebar for local edit and scaffold work."
-        },
         "bluewirksLocalAgent.workspaceTarget": {
           "type": "string",
           "default": "",
@@ -181,60 +176,6 @@
           "type": "string",
           "default": "/Users/bluewirks.max/Documents/VSWirks/vswirks-app",
           "description": "Source folder or installed app root for the standalone VSWirks App."
-        },
-        "bluewirksLocalAgent.chatTemperature": {
-          "type": "number",
-          "default": 0.2,
-          "minimum": 0,
-          "maximum": 2,
-          "description": "Default chat temperature tuned for local code analysis and scaffolding."
-        },
-        "bluewirksLocalAgent.chatTopP": {
-          "type": "number",
-          "default": 0.9,
-          "minimum": 0.1,
-          "maximum": 1,
-          "description": "Default chat top_p tuned for grounded but flexible local responses."
-        },
-        "bluewirksLocalAgent.chatMaxTokens": {
-          "type": "number",
-          "default": 4096,
-          "minimum": 256,
-          "maximum": 8192,
-          "description": "Default chat max_tokens for longer local review and scaffold responses."
-        },
-        "bluewirksLocalAgent.agentTemperature": {
-          "type": "number",
-          "default": 0.1,
-          "minimum": 0,
-          "maximum": 2,
-          "description": "Default agent temperature tuned for stable multi-step tool use."
-        },
-        "bluewirksLocalAgent.agentTopP": {
-          "type": "number",
-          "default": 0.85,
-          "minimum": 0.1,
-          "maximum": 1,
-          "description": "Default agent top_p tuned for controlled planning and edits."
-        },
-        "bluewirksLocalAgent.agentMaxTokens": {
-          "type": "number",
-          "default": 4096,
-          "minimum": 256,
-          "maximum": 8192,
-          "description": "Default agent max_tokens for longer planning and tool-driven completions."
-        },
-        "bluewirksLocalAgent.agentMaxSteps": {
-          "type": "number",
-          "default": 6,
-          "minimum": 1,
-          "maximum": 12,
-          "description": "Maximum number of agent tool-execution rounds per request."
-        },
-        "bluewirksLocalAgent.writeRequiresApproval": {
-          "type": "boolean",
-          "default": true,
-          "description": "Require confirmation before write_file tool calls modify workspace files."
         }
       }
     }

@@ -7,6 +7,15 @@ const { IPC_CHANNELS } = require("./ipc-channels.cjs");
 
 let mainWindow = null;
 let controller = null;
+const APP_ICON_PATH = path.join(__dirname, "..", "src", "assets", "vswirks-dock.png");
+
+app.setName("VSWirks App");
+
+const hasSingleInstanceLock = app.requestSingleInstanceLock();
+
+if (!hasSingleInstanceLock) {
+  app.quit();
+}
 
 async function createMainWindow() {
   mainWindow = new BrowserWindow({
@@ -16,6 +25,7 @@ async function createMainWindow() {
     minHeight: 760,
     backgroundColor: "#11151c",
     title: "VSWirks App",
+    icon: APP_ICON_PATH,
     webPreferences: {
       preload: path.join(__dirname, "preload.cjs"),
       contextIsolation: true,
@@ -33,7 +43,22 @@ async function createMainWindow() {
   await mainWindow.loadFile(path.join(__dirname, "..", "src", "index.html"));
 }
 
+app.on("second-instance", async () => {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    if (mainWindow.isMinimized()) {
+      mainWindow.restore();
+    }
+    mainWindow.show();
+    mainWindow.focus();
+    return;
+  }
+  await createMainWindow();
+});
+
 app.whenReady().then(async () => {
+  if (process.platform === "darwin" && app.dock) {
+    app.dock.setIcon(APP_ICON_PATH);
+  }
   registerIpc();
   await createMainWindow();
 

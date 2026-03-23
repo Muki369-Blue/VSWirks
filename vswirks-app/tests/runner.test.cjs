@@ -1,7 +1,11 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
+const fs = require("node:fs/promises");
+const os = require("node:os");
+const path = require("node:path");
 
 const {
+  buildWorkspaceSystemPrompt,
   buildDeterministicBootstrapManifest,
   evaluateRepoMaterializationManifest,
   evaluatePhaseMaterializationManifest,
@@ -416,6 +420,49 @@ test("findMissingPhaseWriteRequirements enforces backend source and test writes"
     ]),
     []
   );
+});
+
+test("buildWorkspaceSystemPrompt layers global, agent, thread, workflow, spec, and intelligence context", async () => {
+  const tmpRoot = await fs.mkdtemp(path.join(os.tmpdir(), "vswirks-runner-prompt-"));
+  await fs.mkdir(path.join(tmpRoot, ".github"), { recursive: true });
+  await fs.writeFile(
+    path.join(tmpRoot, ".github", "copilot-instructions.md"),
+    "Respect repo conventions.",
+    "utf8"
+  );
+
+  try {
+    const prompt = await buildWorkspaceSystemPrompt(tmpRoot, {
+      globalSystemPrompt: "Global guidance",
+      agentProfile: {
+        id: "review-analyst",
+        label: "Review Analyst",
+        systemPrompt: "Agent profile guidance"
+      },
+      threadSystemPrompt: "Thread guidance",
+      workflowPreset: {
+        label: "Review Repo",
+        description: "Audit the workspace",
+        completionContract: "Report findings first"
+      },
+      specDraft: {
+        raw: "# Spec\n\nAudit the repository"
+      },
+      intelligence: {
+        summary: "Frameworks: Electron, FastAPI"
+      }
+    });
+
+    assert.match(prompt, /Workspace instructions:\nRespect repo conventions\./);
+    assert.match(prompt, /Global system prompt:\nGlobal guidance/);
+    assert.match(prompt, /Agent profile \(Review Analyst\):\nAgent profile guidance/);
+    assert.match(prompt, /Thread override prompt:\nThread guidance/);
+    assert.match(prompt, /Workflow preset: Review Repo/);
+    assert.match(prompt, /Active spec draft:\n# Spec/);
+    assert.match(prompt, /Project intelligence:\nFrameworks: Electron, FastAPI/);
+  } finally {
+    await fs.rm(tmpRoot, { recursive: true, force: true });
+  }
 });
 
 test("evaluatePhaseMaterializationManifest requires backend recovery manifests to write code and tests", () => {

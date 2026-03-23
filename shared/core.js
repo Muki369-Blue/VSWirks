@@ -1,6 +1,6 @@
 const path = require("path");
 
-const APP_STATE_VERSION = 2;
+const APP_STATE_VERSION = 3;
 const MAX_STORED_THREADS = 20;
 const MAX_STORED_PROJECTS = 12;
 const MAX_STORED_SPECS = 16;
@@ -28,6 +28,7 @@ const DEFAULT_GENERATION_SETTINGS = Object.freeze({
   agentTopP: 0.85,
   agentMaxTokens: 4096
 });
+const AGENT_ROLE_VALUES = new Set(["chat", "builder", "reviewer", "refiner", "editor"]);
 
 function delay(ms) {
   return new Promise((resolve) => {
@@ -291,6 +292,104 @@ function normalizeWorkflowPreset(workflow) {
   return createWorkflowPreset(workflow);
 }
 
+function normalizeAgentPreferredRole(value) {
+  return typeof value === "string" && AGENT_ROLE_VALUES.has(value.trim())
+    ? value.trim()
+    : "";
+}
+
+function createAgentProfile(seed = {}) {
+  return {
+    id: typeof seed.id === "string" && seed.id ? seed.id : makeId("agent"),
+    label:
+      typeof seed.label === "string" && seed.label.trim()
+        ? seed.label.trim()
+        : "New Agent",
+    description:
+      typeof seed.description === "string" && seed.description.trim()
+        ? seed.description.trim()
+        : "",
+    preferredRole: normalizeAgentPreferredRole(seed.preferredRole),
+    modelOverride:
+      typeof seed.modelOverride === "string" && seed.modelOverride.trim()
+        ? seed.modelOverride.trim()
+        : "",
+    systemPrompt:
+      typeof seed.systemPrompt === "string" && seed.systemPrompt.trim()
+        ? seed.systemPrompt.trim()
+        : "",
+    defaultMode: seed.defaultMode === "agent" ? "agent" : "chat",
+    defaultExecutionMode: normalizeExecutionMode(seed.defaultExecutionMode),
+    linkedWorkflowPresetId:
+      typeof seed.linkedWorkflowPresetId === "string" && seed.linkedWorkflowPresetId.trim()
+        ? seed.linkedWorkflowPresetId.trim()
+        : "",
+    promptPrefix:
+      typeof seed.promptPrefix === "string" && seed.promptPrefix.trim()
+        ? seed.promptPrefix.trim()
+        : "",
+    enabled: seed.enabled !== false
+  };
+}
+
+function normalizeAgentProfile(profile) {
+  if (!profile || typeof profile !== "object") {
+    return null;
+  }
+  return createAgentProfile(profile);
+}
+
+function getDefaultAgentProfiles() {
+  return [
+    createAgentProfile({
+      id: "app-default",
+      label: "App Default",
+      description: "Balanced local-first behavior for day-to-day VSWirks work.",
+      preferredRole: "chat",
+      defaultMode: "chat",
+      defaultExecutionMode: "plan",
+      systemPrompt:
+        "Keep responses concise, practical, and app-first. Route heavy repo work into staged VSWirks App runs instead of loose snippets."
+    }),
+    createAgentProfile({
+      id: "build-operator",
+      label: "Build Operator",
+      description: "Use for staged implementation and scaffold work owned by VSWirks App.",
+      preferredRole: "editor",
+      defaultMode: "agent",
+      defaultExecutionMode: "act",
+      linkedWorkflowPresetId: "scaffold-app",
+      promptPrefix:
+        "Treat VSWirks App as the orchestration owner. Finish real repository structure, validation, and resumable staged execution.",
+      systemPrompt:
+        "You are executing app-owned local builds. Prefer coherent repo completion, validation, and resumable staged progress over ad hoc edits."
+    }),
+    createAgentProfile({
+      id: "review-analyst",
+      label: "Review Analyst",
+      description: "Findings-first reviewer for repo and code audits.",
+      preferredRole: "reviewer",
+      defaultMode: "chat",
+      defaultExecutionMode: "plan",
+      linkedWorkflowPresetId: "review-repo",
+      systemPrompt:
+        "Review like a senior engineer. Findings first. Prioritize bugs, regressions, risky assumptions, and missing tests."
+    })
+  ];
+}
+
+function normalizeAgentProfileList(profiles) {
+  const defaults = getDefaultAgentProfiles();
+  const incoming = Array.isArray(profiles)
+    ? profiles.map((profile) => normalizeAgentProfile(profile)).filter(Boolean)
+    : [];
+  const merged = new Map(defaults.map((profile) => [profile.id, profile]));
+  for (const profile of incoming) {
+    merged.set(profile.id, profile);
+  }
+  return Array.from(merged.values());
+}
+
 function createRunEvent(seed = {}) {
   return {
     id: typeof seed.id === "string" && seed.id ? seed.id : makeId("event"),
@@ -416,6 +515,48 @@ function createRunRecord(seed = {}) {
       typeof seed.requestedModel === "string" ? seed.requestedModel : "",
     resolvedModel:
       typeof seed.resolvedModel === "string" ? seed.resolvedModel : "",
+    agentProfileId: typeof seed.agentProfileId === "string" ? seed.agentProfileId : "",
+    resolvedAgentProfileId:
+      typeof seed.resolvedAgentProfileId === "string" ? seed.resolvedAgentProfileId : "",
+    resolvedAgentProfileLabel:
+      typeof seed.resolvedAgentProfileLabel === "string" ? seed.resolvedAgentProfileLabel : "",
+    resolvedModelRole:
+      typeof seed.resolvedModelRole === "string" ? seed.resolvedModelRole : "",
+    resolvedPromptPrefix:
+      typeof seed.resolvedPromptPrefix === "string" ? seed.resolvedPromptPrefix : "",
+    resolvedSystemPrompt:
+      typeof seed.resolvedSystemPrompt === "string" ? seed.resolvedSystemPrompt : "",
+    promptContext:
+      seed.promptContext && typeof seed.promptContext === "object"
+        ? {
+            globalSystemPrompt:
+              typeof seed.promptContext.globalSystemPrompt === "string"
+                ? seed.promptContext.globalSystemPrompt
+                : "",
+            agentProfileSystemPrompt:
+              typeof seed.promptContext.agentProfileSystemPrompt === "string"
+                ? seed.promptContext.agentProfileSystemPrompt
+                : "",
+            threadSystemPrompt:
+              typeof seed.promptContext.threadSystemPrompt === "string"
+                ? seed.promptContext.threadSystemPrompt
+                : "",
+            workflowPromptPrefix:
+              typeof seed.promptContext.workflowPromptPrefix === "string"
+                ? seed.promptContext.workflowPromptPrefix
+                : "",
+            agentPromptPrefix:
+              typeof seed.promptContext.agentPromptPrefix === "string"
+                ? seed.promptContext.agentPromptPrefix
+                : ""
+          }
+        : {
+            globalSystemPrompt: "",
+            agentProfileSystemPrompt: "",
+            threadSystemPrompt: "",
+            workflowPromptPrefix: "",
+            agentPromptPrefix: ""
+          },
     status: typeof seed.status === "string" && seed.status ? seed.status : "queued",
     summary: typeof seed.summary === "string" ? seed.summary : "",
     changedFiles: Array.isArray(seed.changedFiles)
@@ -466,6 +607,12 @@ function normalizeRunRecord(run) {
 }
 
 function createThread(seed = {}) {
+  const modelOverride =
+    seed && typeof seed.modelOverride === "string"
+      ? seed.modelOverride
+      : seed && typeof seed.model === "string"
+        ? seed.model
+        : "";
   return {
     id: makeId("thread"),
     title: seed && seed.title ? seed.title : "New chat",
@@ -474,8 +621,12 @@ function createThread(seed = {}) {
     mode: seed && seed.mode === "agent" ? "agent" : "chat",
     executionMode: normalizeExecutionMode(seed && seed.executionMode),
     writeApprovalMode: normalizeWriteApprovalMode(seed && seed.writeApprovalMode),
-    model: seed && typeof seed.model === "string" ? seed.model : "",
+    model: modelOverride,
+    modelOverride,
     lastModelUsed: seed && typeof seed.lastModelUsed === "string" ? seed.lastModelUsed : "",
+    agentProfileId: seed && typeof seed.agentProfileId === "string" ? seed.agentProfileId : "",
+    systemPromptOverride:
+      seed && typeof seed.systemPromptOverride === "string" ? seed.systemPromptOverride : "",
     workflowPresetId:
       seed && typeof seed.workflowPresetId === "string" ? seed.workflowPresetId : "freeform",
     pausedAfterSpec: Boolean(seed && seed.pausedAfterSpec),
@@ -483,6 +634,7 @@ function createThread(seed = {}) {
       seed && typeof seed.approvalScope === "string" ? seed.approvalScope : "ask",
     currentRunId: seed && typeof seed.currentRunId === "string" ? seed.currentRunId : "",
     specDraftId: seed && typeof seed.specDraftId === "string" ? seed.specDraftId : "",
+    draftPrompt: seed && typeof seed.draftPrompt === "string" ? seed.draftPrompt : "",
     lastValidationResult:
       seed && typeof seed.lastValidationResult === "string" ? seed.lastValidationResult : "",
     messages: []
@@ -518,8 +670,22 @@ function normalizeThread(thread) {
     mode: thread.mode === "agent" ? "agent" : "chat",
     executionMode: normalizeExecutionMode(thread.executionMode),
     writeApprovalMode: normalizeWriteApprovalMode(thread.writeApprovalMode),
-    model: typeof thread.model === "string" ? thread.model : "",
+    model:
+      typeof thread.modelOverride === "string"
+        ? thread.modelOverride
+        : typeof thread.model === "string"
+          ? thread.model
+          : "",
+    modelOverride:
+      typeof thread.modelOverride === "string"
+        ? thread.modelOverride
+        : typeof thread.model === "string"
+          ? thread.model
+          : "",
     lastModelUsed: typeof thread.lastModelUsed === "string" ? thread.lastModelUsed : "",
+    agentProfileId: typeof thread.agentProfileId === "string" ? thread.agentProfileId : "",
+    systemPromptOverride:
+      typeof thread.systemPromptOverride === "string" ? thread.systemPromptOverride : "",
     workflowPresetId:
       typeof thread.workflowPresetId === "string" && thread.workflowPresetId
         ? thread.workflowPresetId
@@ -531,6 +697,7 @@ function normalizeThread(thread) {
         : "ask",
     currentRunId: typeof thread.currentRunId === "string" ? thread.currentRunId : "",
     specDraftId: typeof thread.specDraftId === "string" ? thread.specDraftId : "",
+    draftPrompt: typeof thread.draftPrompt === "string" ? thread.draftPrompt : "",
     lastValidationResult:
       typeof thread.lastValidationResult === "string" ? thread.lastValidationResult : "",
     messages
@@ -551,7 +718,10 @@ function createProjectSession(seed = {}) {
   const thread = createThread({
     mode: seed.mode || "chat",
     executionMode: seed.executionMode || DEFAULT_EXECUTION_MODE,
-    model: seed.model || "",
+    modelOverride: seed.modelOverride || seed.model || "",
+    agentProfileId: seed.agentProfileId || "",
+    systemPromptOverride: seed.systemPromptOverride || "",
+    draftPrompt: seed.draftPrompt || "",
     workflowPresetId: seed.workflowPresetId || "freeform"
   });
   return {
@@ -573,6 +743,8 @@ function createProjectSession(seed = {}) {
     createdAt: Number(seed.createdAt) || Date.now(),
     updatedAt: Number(seed.updatedAt) || Date.now(),
     activeThreadId: thread.id,
+    defaultAgentProfileId:
+      typeof seed.defaultAgentProfileId === "string" ? seed.defaultAgentProfileId : "",
     activeSpecId: typeof seed.activeSpecId === "string" ? seed.activeSpecId : "",
     currentRunId: typeof seed.currentRunId === "string" ? seed.currentRunId : "",
     threads: [thread],
@@ -655,6 +827,8 @@ function normalizeProjectSession(project) {
     createdAt: Number(project.createdAt) || Date.now(),
     updatedAt: Number(project.updatedAt) || Date.now(),
     activeThreadId,
+    defaultAgentProfileId:
+      typeof project.defaultAgentProfileId === "string" ? project.defaultAgentProfileId : "",
     activeSpecId,
     currentRunId:
       typeof project.currentRunId === "string" && project.currentRunId
@@ -836,6 +1010,10 @@ module.exports = {
   createWorkflowPreset,
   normalizeWorkflowPreset,
   getDefaultWorkflowPresets,
+  createAgentProfile,
+  normalizeAgentProfile,
+  getDefaultAgentProfiles,
+  normalizeAgentProfileList,
   createRunEvent,
   normalizeRunEvent,
   createRunCheckpoint,
