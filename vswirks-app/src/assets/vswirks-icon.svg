@@ -1,0 +1,51 @@
+<svg width="1024" height="1024" viewBox="0 0 1024 1024" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bg" x1="128" y1="96" x2="912" y2="928" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#11203A"/>
+      <stop offset="0.48" stop-color="#141734"/>
+      <stop offset="1" stop-color="#090D18"/>
+    </linearGradient>
+    <linearGradient id="frame" x1="208" y1="208" x2="790" y2="676" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#D9ECFF"/>
+      <stop offset="0.5" stop-color="#98D7FF"/>
+      <stop offset="1" stop-color="#FFC586"/>
+    </linearGradient>
+    <linearGradient id="beam" x1="392" y1="688" x2="770" y2="252" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#FFB574"/>
+      <stop offset="0.5" stop-color="#72D7FF"/>
+      <stop offset="1" stop-color="#8D86FF"/>
+    </linearGradient>
+    <radialGradient id="haloA" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(276 214) rotate(39.8) scale(410 287)">
+      <stop stop-color="#67D1FF" stop-opacity="0.48"/>
+      <stop offset="1" stop-color="#67D1FF" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="haloB" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(770 798) rotate(-146.2) scale(364 278)">
+      <stop stop-color="#FF9E5F" stop-opacity="0.5"/>
+      <stop offset="1" stop-color="#FF9E5F" stop-opacity="0"/>
+    </radialGradient>
+    <filter id="glow" x="256" y="132" width="612" height="628" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+      <feFlood flood-opacity="0" result="BackgroundImageFix"/>
+      <feBlend mode="normal" in="SourceGraphic" in2="BackgroundImageFix" result="shape"/>
+      <feGaussianBlur stdDeviation="18" result="effect1_foregroundBlur"/>
+    </filter>
+  </defs>
+
+  <rect x="64" y="64" width="896" height="896" rx="248" fill="url(#bg)"/>
+  <rect x="64" y="64" width="896" height="896" rx="248" stroke="#FFFFFF" stroke-opacity="0.18" stroke-width="10"/>
+  <ellipse cx="276" cy="214" rx="308" ry="216" fill="url(#haloA)"/>
+  <ellipse cx="770" cy="798" rx="278" ry="212" fill="url(#haloB)"/>
+
+  <g filter="url(#glow)">
+    <path d="M422 684L756 300" stroke="url(#beam)" stroke-width="48" stroke-linecap="round"/>
+  </g>
+
+  <rect x="214" y="222" width="232" height="436" rx="58" fill="#FFFFFF" fill-opacity="0.03" stroke="url(#frame)" stroke-width="42"/>
+  <rect x="494" y="222" width="232" height="232" rx="58" fill="#FFFFFF" fill-opacity="0.03" stroke="url(#frame)" stroke-width="42"/>
+  <rect x="494" y="502" width="292" height="156" rx="54" fill="#FFFFFF" fill-opacity="0.03" stroke="url(#frame)" stroke-width="42"/>
+
+  <path d="M446 508H494" stroke="url(#frame)" stroke-width="42" stroke-linecap="round"/>
+  <path d="M494 454V502" stroke="url(#frame)" stroke-width="42" stroke-linecap="round"/>
+
+  <circle cx="760" cy="238" r="22" fill="#FFB574"/>
+  <circle cx="810" cy="278" r="10" fill="#72D7FF"/>
+</svg>

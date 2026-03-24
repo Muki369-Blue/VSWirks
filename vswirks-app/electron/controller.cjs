@@ -29,6 +29,8 @@ const {
   createApprovalRequest,
   createProjectIntelligence,
   getDefaultWorkflowPresets,
+  normalizeAgentProfileList,
+  getDefaultAgentProfiles,
   looksLikeRepoCreationRequest
 } = require("../../shared/core");
 const {
@@ -57,12 +59,13 @@ const {
   exists
 } = require("./workspace-tools.cjs");
 const { isImagePath, createImageAttachment } = require("./image-tools.cjs");
-const { runConversation } = require("./runner.cjs");
+const { runConversation, buildWorkspaceSystemPrompt } = require("./runner.cjs");
 
 const AUTO_MODEL_VALUE = "__auto__";
 const LEGACY_CODER_MODEL = "qwen2.5-coder:14b-instruct";
 const DEFAULT_CODER_MODEL = "devstral-small-2";
 const DEFAULT_CHAT_MODEL = "llama3.3-8b-thinking:q6";
+const DEFAULT_AGENT_PROFILE_ID = "app-default";
 
 class VSWirksController {
   constructor(window, dependencies = {}) {
@@ -95,7 +98,10 @@ class VSWirksController {
       runtimeCwd: DEFAULT_RUNTIME_CWD,
       runtimePython: DEFAULT_RUNTIME_PYTHON,
       generationSettings: DEFAULT_GENERATION_SETTINGS,
-      writeRequiresApproval: true
+      writeRequiresApproval: true,
+      globalSystemPrompt: "",
+      agentProfiles: getDefaultAgentProfiles(),
+      defaultAgentProfileId: DEFAULT_AGENT_PROFILE_ID
     };
     this.bridgePollHandle = undefined;
   }
@@ -141,6 +147,8 @@ class VSWirksController {
         return this.deleteThread(payload && payload.id);
       case "vswirks:updateThreadSettings":
         return this.updateThreadSettings(payload || {});
+      case "vswirks:updateProjectSettings":
+        return this.updateProjectSettings(payload || {});
       case "vswirks:attachFile":
         return this.attachFiles();
       case "vswirks:attachImage":
@@ -177,6 +185,10 @@ class VSWirksController {
         return this.saveGenerationSettings(payload || {});
       case "vswirks:saveModelRoles":
         return this.saveModelRoles(payload || {});
+      case "vswirks:savePromptingSettings":
+        return this.savePromptingSettings(payload || {});
+      case "vswirks:getPromptPreview":
+        return this.getPromptPreview(payload || {});
       case "vswirks:resetGenerationSettings":
         return this.resetGenerationSettings();
       case "vswirks:openFile":
@@ -218,8 +230,17 @@ class VSWirksController {
       generationSettings: normalizeGenerationSettings(
         stored.generationSettings || DEFAULT_GENERATION_SETTINGS
       ),
-      writeRequiresApproval: stored.writeRequiresApproval !== false
+      writeRequiresApproval: stored.writeRequiresApproval !== false,
+      globalSystemPrompt:
+        typeof stored.globalSystemPrompt === "string" ? stored.globalSystemPrompt.trim() : "",
+      agentProfiles: normalizeAgentProfileList(stored.agentProfiles),
+      defaultAgentProfileId: DEFAULT_AGENT_PROFILE_ID
     };
+    this.settings.defaultAgentProfileId = normalizeAgentProfileId(
+      stored.defaultAgentProfileId,
+      this.settings.agentProfiles,
+      DEFAULT_AGENT_PROFILE_ID
+    );
   }
 
   async loadState() {
@@ -227,11 +248,16 @@ class VSWirksController {
     const normalized = normalizeAppState(raw);
     this.projects = normalized.projects;
     this.activeProjectId = normalized.activeProjectId;
+    this.normalizePromptingState();
   }
 
   async loadBridgeState() {
     this.bridgeState = await readBridgeState();
     this.reconcileBridgeProject();
+    const applied = await this.applyBridgeHandoffRequest();
+    if (applied) {
+      await this.persistState();
+    }
   }
 
   startBridgePolling() {
@@ -246,7 +272,9 @@ class VSWirksController {
         lastSerialized = serialized;
         this.bridgeState = next || {};
         const adopted = this.reconcileBridgeProject();
-        if (adopted) {
+        const handedOff = await this.applyBridgeHandoffRequest();
+        if (adopted || handedOff) {
+          await this.refreshProjectIntelligence(this.getActiveProject(), false);
           await this.persistState();
         }
         this.postState();
@@ -262,7 +290,7 @@ class VSWirksController {
       typeof this.bridgeState.activeWorkspaceRoot === "string" && this.bridgeState.activeWorkspaceRoot
         ? this.bridgeState.activeWorkspaceRoot
         : "";
-    const project = createProjectSession({
+    const project = this.createProjectRecord({
       name: fallbackRoot ? path.basename(fallbackRoot) : "No Project Selected",
       workspaceRoot: fallbackRoot,
       targetPath: fallbackRoot
@@ -281,17 +309,114 @@ class VSWirksController {
     return this.projects[0] || null;
   }
 
+  normalizePromptingState() {
+    const profiles = this.settings.agentProfiles || getDefaultAgentProfiles();
+    this.settings.defaultAgentProfileId = normalizeAgentProfileId(
+      this.settings.defaultAgentProfileId,
+      profiles,
+      DEFAULT_AGENT_PROFILE_ID
+    );
+    this.projects = (this.projects || []).map((project) => {
+      const normalizedProject = project;
+      normalizedProject.defaultAgentProfileId = normalizeAgentProfileId(
+        normalizedProject.defaultAgentProfileId,
+        profiles,
+        this.settings.defaultAgentProfileId
+      );
+      normalizedProject.threads = Array.isArray(normalizedProject.threads)
+        ? normalizedProject.threads.map((thread) => ({
+            ...thread,
+            agentProfileId: normalizeAgentProfileId(
+              thread.agentProfileId,
+              profiles,
+              normalizedProject.defaultAgentProfileId
+            ),
+            modelOverride:
+              typeof thread.modelOverride === "string"
+                ? thread.modelOverride
+                : typeof thread.model === "string"
+                  ? thread.model
+                  : "",
+            model:
+              typeof thread.modelOverride === "string"
+                ? thread.modelOverride
+                : typeof thread.model === "string"
+                  ? thread.model
+                  : "",
+            systemPromptOverride:
+              typeof thread.systemPromptOverride === "string" ? thread.systemPromptOverride : "",
+            draftPrompt: typeof thread.draftPrompt === "string" ? thread.draftPrompt : ""
+          }))
+        : [];
+      return normalizedProject;
+    });
+  }
+
+  createProjectRecord(seed = {}) {
+    return createProjectSession({
+      ...seed,
+      defaultAgentProfileId: normalizeAgentProfileId(
+        seed.defaultAgentProfileId,
+        this.settings.agentProfiles,
+        this.settings.defaultAgentProfileId
+      )
+    });
+  }
+
   reconcileBridgeProject() {
     const bridgeRoot = this.resolveBridgeWorkspaceRoot();
     if (!bridgeRoot) {
       return false;
     }
+    const bridgeTarget = this.resolveBridgeTargetPath(bridgeRoot);
+
+    const matchingProject = this.projects.find((project) => project.workspaceRoot === bridgeRoot);
+    if (matchingProject) {
+      let changed = false;
+      if (this.activeProjectId !== matchingProject.id) {
+        this.activeProjectId = matchingProject.id;
+        changed = true;
+      }
+      if (matchingProject.name !== path.basename(bridgeRoot)) {
+        matchingProject.name = path.basename(bridgeRoot);
+        changed = true;
+      }
+      if (matchingProject.targetPath !== bridgeTarget) {
+        matchingProject.targetPath = bridgeTarget;
+        changed = true;
+      }
+      const normalizedDefaultAgent = normalizeAgentProfileId(
+        matchingProject.defaultAgentProfileId,
+        this.settings.agentProfiles,
+        this.settings.defaultAgentProfileId
+      );
+      if (matchingProject.defaultAgentProfileId !== normalizedDefaultAgent) {
+        matchingProject.defaultAgentProfileId = normalizedDefaultAgent;
+        changed = true;
+      }
+      if (
+        !matchingProject.intelligence ||
+        matchingProject.intelligence.workspaceRoot !== bridgeRoot ||
+        matchingProject.intelligence.targetPath !== bridgeTarget
+      ) {
+        matchingProject.intelligence = createProjectIntelligence({
+          workspaceRoot: bridgeRoot,
+          targetPath: bridgeTarget,
+          summary: "No project intelligence generated yet."
+        });
+        changed = true;
+      }
+      if (changed) {
+        touchProject(this.projects, matchingProject.id);
+      }
+      return changed;
+    }
 
     if (!this.projects.length) {
-      const project = createProjectSession({
+      const project = this.createProjectRecord({
         name: path.basename(bridgeRoot),
         workspaceRoot: bridgeRoot,
-        targetPath: this.resolveBridgeTargetPath(bridgeRoot)
+        targetPath: bridgeTarget
       });
       this.projects = [project];
       this.activeProjectId = project.id;
@@ -306,7 +431,12 @@ class VSWirksController {
     ) {
       activeProject.name = path.basename(bridgeRoot);
       activeProject.workspaceRoot = bridgeRoot;
-      activeProject.targetPath = this.resolveBridgeTargetPath(bridgeRoot);
+      activeProject.targetPath = bridgeTarget;
+      activeProject.defaultAgentProfileId = normalizeAgentProfileId(
+        activeProject.defaultAgentProfileId,
+        this.settings.agentProfiles,
+        this.settings.defaultAgentProfileId
+      );
       activeProject.intelligence = createProjectIntelligence({
         workspaceRoot: bridgeRoot,
         targetPath: activeProject.targetPath,
@@ -316,7 +446,19 @@ class VSWirksController {
       return true;
     }
 
-    return false;
+    const project = this.createProjectRecord({
+      name: path.basename(bridgeRoot),
+      workspaceRoot: bridgeRoot,
+      targetPath: bridgeTarget
+    });
+    project.intelligence = createProjectIntelligence({
+      workspaceRoot: bridgeRoot,
+      targetPath: bridgeTarget,
+      summary: "No project intelligence generated yet."
+    });
+    this.projects.unshift(project);
+    this.activeProjectId = project.id;
+    return true;
   }
 
   getActiveThread(project = this.getActiveProject()) {
@@ -372,14 +514,28 @@ class VSWirksController {
     ) {
       return this.bridgeState.activeWorkspaceRoot;
     }
+    const workspaceRoots = Array.isArray(this.bridgeState.workspaceRoots)
+      ? this.bridgeState.workspaceRoots.filter((item) => typeof item === "string" && item)
+      : [];
+    if (
+      typeof this.bridgeState.workspaceTarget === "string" &&
+      this.bridgeState.workspaceTarget
+    ) {
+      const matchingRoot = workspaceRoots.find((rootPath) =>
+        isPathWithin(rootPath, this.bridgeState.workspaceTarget)
+      );
+      if (matchingRoot) {
+        return matchingRoot;
+      }
+    }
+    if (workspaceRoots.length) {
+      return workspaceRoots[0];
+    }
     if (
       typeof this.bridgeState.workspaceTarget === "string" &&
       this.bridgeState.workspaceTarget
     ) {
       return this.bridgeState.workspaceTarget;
-    }
-    if (Array.isArray(this.bridgeState.workspaceRoots) && this.bridgeState.workspaceRoots.length) {
-      return this.bridgeState.workspaceRoots[0];
     }
     return "";
   }
@@ -393,6 +549,124 @@ class VSWirksController {
       return this.bridgeState.workspaceTarget;
     }
     return bridgeRoot;
+  }
+
+  getAgentProfileById(agentProfileId) {
+    return (
+      (this.settings.agentProfiles || []).find((profile) => profile.id === agentProfileId) || null
+    );
+  }
+
+  async applyBridgeHandoffRequest() {
+    const request =
+      this.bridgeState &&
+      this.bridgeState.appHandoffRequest &&
+      typeof this.bridgeState.appHandoffRequest === "object"
+        ? this.bridgeState.appHandoffRequest
+        : null;
+    const requestedAt = Number(request && request.requestedAt) || 0;
+    const appliedAt = Number(request && request.appliedAt) || 0;
+    if (!requestedAt || requestedAt <= appliedAt) {
+      return false;
+    }
+
+    const prompt = typeof request.prompt === "string" ? request.prompt.trim() : "";
+    const workspaceRoot =
+      typeof request.workspaceRoot === "string" && request.workspaceRoot.trim()
+        ? request.workspaceRoot.trim()
+        : this.resolveBridgeWorkspaceRoot();
+    const targetPath =
+      typeof request.targetPath === "string" && request.targetPath.trim()
+        ? request.targetPath.trim()
+        : workspaceRoot;
+    if (!workspaceRoot || !prompt) {
+      await this.dependencies.updateBridgeState({
+        appHandoffRequest: {
+          ...(request || {}),
+          appliedAt: Date.now(),
+          appliedBy: "VSWirks App",
+          error: "Missing workspace root or prompt for handoff."
+        }
+      });
+      return false;
+    }
+
+    let project = this.projects.find((entry) => entry.workspaceRoot === workspaceRoot) || null;
+    if (!project) {
+      project = this.createProjectRecord({
+        name: path.basename(workspaceRoot),
+        workspaceRoot,
+        targetPath:
+          targetPath && isPathWithin(workspaceRoot, targetPath) ? targetPath : workspaceRoot
+      });
+      this.projects.unshift(project);
+    } else {
+      project.targetPath =
+        targetPath && isPathWithin(workspaceRoot, targetPath) ? targetPath : workspaceRoot;
+      project.defaultAgentProfileId = normalizeAgentProfileId(
+        project.defaultAgentProfileId,
+        this.settings.agentProfiles,
+        this.settings.defaultAgentProfileId
+      );
+    }
+    this.activeProjectId = project.id;
+
+    await this.newChat({
+      workflowPresetId:
+        typeof request.requestedWorkflowId === "string" && request.requestedWorkflowId
+          ? request.requestedWorkflowId
+          : inferWorkflowPresetId(prompt, []),
+      mode: request.requestedMode === "agent" ? "agent" : "chat",
+      executionMode: request.requestedExecutionMode === "act" ? "act" : "plan",
+      agentProfileId:
+        typeof request.requestedAgentProfileId === "string" ? request.requestedAgentProfileId : "",
+      prompt
+    });
+
+    const thread = this.getActiveThread(project);
+    if (thread) {
+      const attachmentSummary = Array.isArray(request.attachmentsSummary)
+        ? request.attachmentsSummary.filter(Boolean)
+        : [];
+      if (attachmentSummary.length) {
+        thread.messages.push({
+          id: makeId("assistant"),
+          role: "assistant",
+          content:
+            "Seeded from VSWirks Editor handoff.\n\n" +
+            attachmentSummary.map((item) => `- ${item}`).join("\n"),
+          model: "",
+          mode: "chat",
+          executionMode: "plan",
+          pending: false,
+          createdAt: Date.now()
+        });
+      }
+      touchThread(project.threads, thread.id);
+    }
+
+    this.lastStatus = "Editor handoff ready in VSWirks App";
+    if (this.window && !this.window.isDestroyed()) {
+      this.window.show();
+      this.window.focus();
+    }
+
+    const nextRequest = {
+      ...(request || {}),
+      appliedAt: Date.now(),
+      appliedBy: "VSWirks App",
+      seededProjectId: project.id,
+      seededThreadId: thread ? thread.id : "",
+      error: ""
+    };
+    await this.dependencies.updateBridgeState({
+      appHandoffRequest: nextRequest
+    });
+    this.bridgeState = {
+      ...this.bridgeState,
+      appHandoffRequest: nextRequest
+    };
+    return true;
   }
 
   async createProject(payload) {
@@ -412,7 +686,7 @@ class VSWirksController {
       return true;
     }
 
-    const project = createProjectSession({
+    const project = this.createProjectRecord({
       name: path.basename(selected),
       workspaceRoot: selected,
       targetPath: selected
@@ -535,12 +809,12 @@ class VSWirksController {
         ? project.targetPath
         : project.workspaceRoot;
 
-    if (await exists(targetPath)) {
-      await this.dependencies.openInVSWirksEditor(targetPath);
-      return true;
-    }
     if (await exists(project.workspaceRoot)) {
       await this.dependencies.openInVSWirksEditor(project.workspaceRoot);
+      return true;
+    }
+    if (await exists(targetPath)) {
+      await this.dependencies.openInVSWirksEditor(targetPath);
       return true;
     }
     return false;
@@ -591,7 +865,21 @@ class VSWirksController {
     const thread = createThread({
       mode: payload.mode || "chat",
       executionMode: payload.executionMode || "plan",
-      workflowPresetId
+      workflowPresetId,
+      agentProfileId: normalizeAgentProfileId(
+        payload.agentProfileId,
+        this.settings.agentProfiles,
+        project.defaultAgentProfileId || this.settings.defaultAgentProfileId
+      ),
+      systemPromptOverride:
+        typeof payload.systemPromptOverride === "string" ? payload.systemPromptOverride : "",
+      modelOverride:
+        typeof payload.modelOverride === "string"
+          ? resolveRequestedModel(payload.modelOverride)
+          : typeof payload.model === "string"
+            ? resolveRequestedModel(payload.model)
+            : "",
+      draftPrompt: typeof payload.prompt === "string" ? payload.prompt : ""
     });
     project.threads = [thread, ...project.threads].slice(0, 20);
     project.activeThreadId = thread.id;
@@ -628,7 +916,8 @@ class VSWirksController {
     if (!project.threads.length) {
       const thread = createThread({
         mode: "chat",
-        executionMode: "plan"
+        executionMode: "plan",
+        agentProfileId: project.defaultAgentProfileId || this.settings.defaultAgentProfileId
       });
       project.threads = [thread];
       project.activeThreadId = thread.id;
@@ -659,10 +948,42 @@ class VSWirksController {
     if (typeof payload.pausedAfterSpec === "boolean") {
       thread.pausedAfterSpec = payload.pausedAfterSpec;
     }
+    if (typeof payload.agentProfileId === "string") {
+      thread.agentProfileId = normalizeAgentProfileId(
+        payload.agentProfileId,
+        this.settings.agentProfiles,
+        project.defaultAgentProfileId || this.settings.defaultAgentProfileId
+      );
+    }
+    if (typeof payload.systemPromptOverride === "string") {
+      thread.systemPromptOverride = payload.systemPromptOverride;
+    }
+    if (typeof payload.draftPrompt === "string") {
+      thread.draftPrompt = payload.draftPrompt;
+    }
     if (typeof payload.model === "string") {
       thread.model = resolveRequestedModel(payload.model);
+      thread.modelOverride = thread.model;
     }
     touchThread(project.threads, thread.id);
+    touchProject(this.projects, project.id);
+    await this.persistState();
+    this.postState();
+    return true;
+  }
+
+  async updateProjectSettings(payload) {
+    const project = this.getActiveProject();
+    if (!project) {
+      return false;
+    }
+    if (typeof payload.defaultAgentProfileId === "string") {
+      project.defaultAgentProfileId = normalizeAgentProfileId(
+        payload.defaultAgentProfileId,
+        this.settings.agentProfiles,
+        this.settings.defaultAgentProfileId
+      );
+    }
     touchProject(this.projects, project.id);
     await this.persistState();
     this.postState();
@@ -772,6 +1093,85 @@ class VSWirksController {
     return true;
   }
 
+  resolveAgentSelection(project, thread, payload = {}) {
+    return normalizeAgentProfileId(
+      typeof payload.agentProfileId === "string"
+        ? payload.agentProfileId
+        : thread.agentProfileId || project.defaultAgentProfileId || this.settings.defaultAgentProfileId,
+      this.settings.agentProfiles,
+      project.defaultAgentProfileId || this.settings.defaultAgentProfileId
+    );
+  }
+
+  resolvePromptConfiguration({
+    project,
+    thread,
+    payload = {},
+    prompt,
+    workflowPreset,
+    mode,
+    executionMode,
+    purpose = "conversation"
+  }) {
+    const agentProfileId = this.resolveAgentSelection(project, thread, payload);
+    const agentProfile = this.getAgentProfileById(agentProfileId);
+    const threadSystemPrompt =
+      typeof payload.systemPromptOverride === "string"
+        ? payload.systemPromptOverride.trim()
+        : typeof thread.systemPromptOverride === "string"
+          ? thread.systemPromptOverride.trim()
+          : "";
+    const requestedModel =
+      resolveRequestedModel(payload.model) ||
+      resolveRequestedModel(thread.modelOverride || thread.model) ||
+      "";
+    const preferredRole =
+      (agentProfile && agentProfile.preferredRole) ||
+      (workflowPreset && workflowPreset.preferredRole) ||
+      "";
+    const resolvedModelRole = resolveModelRole({
+      prompt,
+      mode,
+      executionMode,
+      purpose,
+      preferredRole
+    });
+    const resolvedModel =
+      requestedModel ||
+      (agentProfile && agentProfile.modelOverride) ||
+      resolveModelForTask(this.settings, {
+        prompt,
+        mode,
+        executionMode,
+        purpose,
+        preferredRole
+      });
+
+    return {
+      agentProfileId,
+      agentProfile,
+      requestedModel,
+      resolvedModel,
+      resolvedModelRole,
+      globalSystemPrompt: this.settings.globalSystemPrompt || "",
+      threadSystemPrompt,
+      promptPrefix: [workflowPreset && workflowPreset.promptPrefix, agentProfile && agentProfile.promptPrefix]
+        .filter(Boolean)
+        .join("\n")
+        .trim(),
+      promptContext: {
+        globalSystemPrompt: this.settings.globalSystemPrompt || "",
+        agentProfileSystemPrompt:
+          agentProfile && agentProfile.systemPrompt ? agentProfile.systemPrompt : "",
+        threadSystemPrompt,
+        workflowPromptPrefix:
+          workflowPreset && workflowPreset.promptPrefix ? workflowPreset.promptPrefix : "",
+        agentPromptPrefix:
+          agentProfile && agentProfile.promptPrefix ? agentProfile.promptPrefix : ""
+      }
+    };
+  }
+
   async buildSpec(payload) {
     const project = this.getActiveProject();
     const thread = this.getActiveThread(project);
@@ -786,15 +1186,32 @@ class VSWirksController {
         ? payload.workflowPresetId
         : thread.workflowPresetId
     );
-    const modelSelection = resolveRequestedModel(payload.model) || thread.model || "";
-    const model =
-      modelSelection ||
-      resolveModelForTask(this.settings, {
-        prompt,
-        mode: payload.mode === "agent" ? "agent" : thread.mode,
-        executionMode: payload.executionMode === "act" ? "act" : thread.executionMode,
-        purpose: "builder"
-      });
+    const mode =
+      payload.mode === "agent"
+        ? "agent"
+        : thread.mode ||
+          (this.getAgentProfileById(this.resolveAgentSelection(project, thread, payload)) || {})
+            .defaultMode ||
+          workflowPreset.defaultMode;
+    const executionMode =
+      payload.executionMode === "act"
+        ? "act"
+        : payload.executionMode === "plan"
+          ? "plan"
+          : thread.executionMode ||
+            (this.getAgentProfileById(this.resolveAgentSelection(project, thread, payload)) || {})
+              .defaultExecutionMode ||
+            workflowPreset.defaultExecutionMode;
+    const promptConfig = this.resolvePromptConfiguration({
+      project,
+      thread,
+      payload,
+      prompt,
+      workflowPreset,
+      mode,
+      executionMode,
+      purpose: "builder"
+    });
 
     try {
       this.lastStatus = "Building spec";
@@ -804,7 +1221,7 @@ class VSWirksController {
         thread,
         prompt,
         workflowPreset,
-        model
+        model: promptConfig.resolvedModel
       });
       this.saveSpecDraft(project, thread, specDraft);
       this.lastStatus = "Spec ready";
@@ -847,14 +1264,17 @@ class VSWirksController {
 
     const mode = payload.mode === "agent" ? "agent" : "chat";
     const executionMode = payload.executionMode === "act" ? "act" : "plan";
-    const model =
-      resolveRequestedModel(payload.model) ||
-      resolveModelForTask(this.settings, {
-        prompt,
-        mode,
-        executionMode,
-        purpose: "refiner"
-      });
+    const promptConfig = this.resolvePromptConfiguration({
+      project,
+      thread: this.getActiveThread(project) || createThread(),
+      payload,
+      prompt,
+      workflowPreset: this.getWorkflowPreset(project, "freeform"),
+      mode,
+      executionMode,
+      purpose: "refiner"
+    });
+    const model = promptConfig.resolvedModel;
     const workspacePath =
       project && (project.targetPath || project.workspaceRoot)
         ? project.targetPath || project.workspaceRoot
@@ -938,20 +1358,33 @@ class VSWirksController {
         ? payload.workflowPresetId
         : thread.workflowPresetId || inferWorkflowPresetId(prompt, project.pendingAttachments);
     const workflowPreset = this.getWorkflowPreset(project, requestedWorkflowId);
-    const mode = payload.mode === "agent" ? "agent" : thread.mode || workflowPreset.defaultMode;
+    const requestedAgentProfileId = this.resolveAgentSelection(project, thread, payload);
+    const agentProfile = this.getAgentProfileById(requestedAgentProfileId);
+    const mode =
+      payload.mode === "agent"
+        ? "agent"
+        : payload.mode === "chat"
+          ? "chat"
+          : thread.mode || (agentProfile && agentProfile.defaultMode) || workflowPreset.defaultMode;
     const executionMode =
       payload.executionMode === "act" ? "act" : payload.executionMode === "plan"
         ? "plan"
-        : thread.executionMode || workflowPreset.defaultExecutionMode;
-    const modelSelection = resolveRequestedModel(payload.model) || thread.model || "";
-    const model =
-      modelSelection ||
-      resolveModelForTask(this.settings, {
-        prompt,
-        mode,
-        executionMode,
-        purpose: "conversation"
-      });
+        : thread.executionMode ||
+          (agentProfile && agentProfile.defaultExecutionMode) ||
+          workflowPreset.defaultExecutionMode;
+    const promptConfig = this.resolvePromptConfiguration({
+      project,
+      thread,
+      payload: {
+        ...payload,
+        agentProfileId: requestedAgentProfileId
+      },
+      prompt,
+      workflowPreset,
+      mode,
+      executionMode,
+      purpose: "conversation"
+    });
     const pauseAfterSpec =
       typeof payload.pausedAfterSpec === "boolean" ? payload.pausedAfterSpec : thread.pausedAfterSpec;
     let specDraft = this.getSpecById(project, thread.specDraftId);
@@ -961,8 +1394,12 @@ class VSWirksController {
     thread.mode = mode;
     thread.executionMode = executionMode;
     thread.pausedAfterSpec = pauseAfterSpec;
-    thread.model = modelSelection;
-    thread.lastModelUsed = model;
+    thread.agentProfileId = promptConfig.agentProfileId;
+    thread.systemPromptOverride = promptConfig.threadSystemPrompt;
+    thread.model = promptConfig.requestedModel;
+    thread.modelOverride = promptConfig.requestedModel;
+    thread.lastModelUsed = promptConfig.resolvedModel;
+    thread.draftPrompt = "";
 
     const runRecord = createRunRecord({
       threadId: thread.id,
@@ -970,8 +1407,14 @@ class VSWirksController {
       prompt,
       mode,
       executionMode,
-      requestedModel: modelSelection,
-      resolvedModel: model,
+      requestedModel: promptConfig.requestedModel,
+      resolvedModel: promptConfig.resolvedModel,
+      agentProfileId: promptConfig.agentProfileId,
+      resolvedAgentProfileId: promptConfig.agentProfileId,
+      resolvedAgentProfileLabel: promptConfig.agentProfile ? promptConfig.agentProfile.label : "",
+      resolvedModelRole: promptConfig.resolvedModelRole,
+      resolvedPromptPrefix: promptConfig.promptPrefix,
+      promptContext: promptConfig.promptContext,
       status: "running",
       pausedAfterSpec: pauseAfterSpec
     });
@@ -996,7 +1439,11 @@ class VSWirksController {
             prompt,
             mode,
             executionMode,
-            purpose: "builder"
+            purpose: "builder",
+            preferredRole:
+              (promptConfig.agentProfile && promptConfig.agentProfile.preferredRole) ||
+              workflowPreset.preferredRole ||
+              ""
           })
         });
         this.saveSpecDraft(project, thread, specDraft);
@@ -1017,7 +1464,7 @@ class VSWirksController {
 
         if (executionMode === "plan") {
           thread.specDraftId = specDraft.id;
-          this.appendAssistantSpecMessage(thread, specDraft, model);
+          this.appendAssistantSpecMessage(thread, specDraft, promptConfig.resolvedModel);
           runRecord.status = "complete";
           runRecord.summary = "Spec generated in plan mode.";
           project.currentRunStatus = "Spec complete";
@@ -1029,7 +1476,7 @@ class VSWirksController {
 
         if (pauseAfterSpec) {
           thread.specDraftId = specDraft.id;
-          this.appendAssistantSpecMessage(thread, specDraft, model);
+          this.appendAssistantSpecMessage(thread, specDraft, promptConfig.resolvedModel);
           runRecord.status = "paused_after_spec";
           runRecord.summary = "Spec generated and paused before execution.";
           project.currentRunStatus = "Paused after spec";
@@ -1065,14 +1512,26 @@ class VSWirksController {
       this.lastStatus = executionMode === "act" ? "Running workflow" : "Planning";
       this.postState();
 
+      runRecord.resolvedSystemPrompt = await buildWorkspaceSystemPrompt(
+        project.targetPath || project.workspaceRoot,
+        {
+          workflowPreset,
+          specDraft,
+          intelligence: project.intelligence,
+          globalSystemPrompt: promptConfig.globalSystemPrompt,
+          agentProfile: promptConfig.agentProfile,
+          threadSystemPrompt: promptConfig.threadSystemPrompt
+        }
+      );
+
       await this.dependencies.runConversation({
         project,
         thread,
         prompt,
         mode,
         executionMode,
-        model,
-        modelSelection,
+        model: promptConfig.resolvedModel,
+        modelSelection: promptConfig.requestedModel,
         attachments: [...project.pendingAttachments],
         generationSettings: this.settings.generationSettings,
         runtimeBaseUrl: this.settings.runtimeBaseUrl,
@@ -1101,6 +1560,12 @@ class VSWirksController {
         workflowPreset,
         specDraft,
         intelligence: project.intelligence,
+        promptContext: {
+          globalSystemPrompt: promptConfig.globalSystemPrompt,
+          agentProfile: promptConfig.agentProfile,
+          threadSystemPrompt: promptConfig.threadSystemPrompt,
+          promptPrefix: promptConfig.promptPrefix
+        },
         runRecord
       });
 
@@ -1307,7 +1772,9 @@ class VSWirksController {
       mode: thread.mode,
       executionMode: "act",
       workflowPresetId: thread.workflowPresetId,
-      model: thread.model,
+      model: thread.modelOverride || thread.model,
+      agentProfileId: thread.agentProfileId,
+      systemPromptOverride: thread.systemPromptOverride,
       pausedAfterSpec: false
     });
   }
@@ -1322,17 +1789,31 @@ class VSWirksController {
     await this.newChat({
       workflowPresetId: run.workflowId,
       mode: run.mode,
-      executionMode: run.executionMode
+      executionMode: run.executionMode,
+      agentProfileId: run.agentProfileId || run.resolvedAgentProfileId || "",
+      modelOverride: run.requestedModel || "",
+      prompt: run.prompt
     });
     const thread = this.getActiveThread(project);
     thread.model = run.requestedModel || "";
+    thread.modelOverride = run.requestedModel || "";
+    thread.agentProfileId = run.agentProfileId || run.resolvedAgentProfileId || "";
     thread.pausedAfterSpec = run.pausedAfterSpec;
+    thread.systemPromptOverride =
+      run.promptContext && typeof run.promptContext.threadSystemPrompt === "string"
+        ? run.promptContext.threadSystemPrompt
+        : "";
     return this.sendPrompt({
       prompt: run.prompt,
       mode: run.mode,
       executionMode: run.executionMode,
       workflowPresetId: run.workflowId,
       model: run.requestedModel,
+      agentProfileId: run.agentProfileId || run.resolvedAgentProfileId || "",
+      systemPromptOverride:
+        run.promptContext && typeof run.promptContext.threadSystemPrompt === "string"
+          ? run.promptContext.threadSystemPrompt
+          : "",
       pausedAfterSpec: run.pausedAfterSpec
     });
   }
@@ -1354,8 +1835,11 @@ class VSWirksController {
     const forked = createThread({
       mode: thread.mode,
       executionMode: thread.executionMode,
-      model: thread.model,
-      workflowPresetId: thread.workflowPresetId
+      modelOverride: thread.modelOverride || thread.model,
+      agentProfileId: thread.agentProfileId,
+      systemPromptOverride: thread.systemPromptOverride,
+      workflowPresetId: thread.workflowPresetId,
+      draftPrompt: thread.draftPrompt || ""
     });
     forked.messages = thread.messages.slice(0, checkpoint.threadMessageCount);
     forked.title = `${thread.title} (forked)`;
@@ -1541,6 +2025,75 @@ class VSWirksController {
     this.lastStatus = "Model roles saved";
     this.postState();
     return true;
+  }
+
+  async savePromptingSettings(payload) {
+    this.settings.globalSystemPrompt =
+      typeof payload.globalSystemPrompt === "string" ? payload.globalSystemPrompt.trim() : "";
+    this.settings.agentProfiles = normalizeAgentProfileList(payload.agentProfiles);
+    this.settings.defaultAgentProfileId = normalizeAgentProfileId(
+      payload.defaultAgentProfileId,
+      this.settings.agentProfiles,
+      DEFAULT_AGENT_PROFILE_ID
+    );
+    this.normalizePromptingState();
+    await writeSettings(this.settings);
+    await this.persistState();
+    this.lastStatus = "Agents and prompting settings saved";
+    this.postState();
+    return true;
+  }
+
+  async getPromptPreview(payload = {}) {
+    const project = this.getActiveProject();
+    const thread = this.getActiveThread(project);
+    if (!project || !thread) {
+      return {
+        ok: false,
+        preview: ""
+      };
+    }
+
+    const prompt =
+      typeof payload.prompt === "string" && payload.prompt.trim()
+        ? payload.prompt.trim()
+        : thread.draftPrompt || "";
+    const workflowPreset = this.getWorkflowPreset(
+      project,
+      typeof payload.workflowPresetId === "string" && payload.workflowPresetId
+        ? payload.workflowPresetId
+        : thread.workflowPresetId || "freeform"
+    );
+    const mode = payload.mode === "agent" ? "agent" : payload.mode === "chat" ? "chat" : thread.mode;
+    const executionMode =
+      payload.executionMode === "act" ? "act" : payload.executionMode === "plan"
+        ? "plan"
+        : thread.executionMode;
+    const promptConfig = this.resolvePromptConfiguration({
+      project,
+      thread,
+      payload,
+      prompt,
+      workflowPreset,
+      mode,
+      executionMode,
+      purpose: "conversation"
+    });
+    const specDraft = this.getSpecById(project, thread.specDraftId);
+    const preview = await buildWorkspaceSystemPrompt(project.targetPath || project.workspaceRoot, {
+      workflowPreset,
+      specDraft,
+      intelligence: project.intelligence,
+      globalSystemPrompt: promptConfig.globalSystemPrompt,
+      agentProfile: promptConfig.agentProfile,
+      threadSystemPrompt: promptConfig.threadSystemPrompt
+    });
+    return {
+      ok: true,
+      preview,
+      resolvedModel: promptConfig.resolvedModel,
+      agentProfileId: promptConfig.agentProfileId
+    };
   }
 
   async resetGenerationSettings() {
@@ -1815,14 +2368,20 @@ class VSWirksController {
               updatedAt: thread.updatedAt,
               mode: thread.mode,
               executionMode: thread.executionMode,
-              model: thread.model,
+              model: thread.modelOverride || thread.model,
+              modelOverride: thread.modelOverride || thread.model || "",
               lastModelUsed: thread.lastModelUsed || "",
+              agentProfileId: thread.agentProfileId || "",
+              systemPromptOverride: thread.systemPromptOverride || "",
+              draftPrompt: thread.draftPrompt || "",
               workflowPresetId: thread.workflowPresetId || "freeform",
               pausedAfterSpec: Boolean(thread.pausedAfterSpec),
               lastValidationResult: thread.lastValidationResult || "",
               messageCount: thread.messages.filter((item) => item.role !== "tool").length
             })),
             activeThreadId: activeProject.activeThreadId,
+            defaultAgentProfileId:
+              activeProject.defaultAgentProfileId || this.settings.defaultAgentProfileId,
             history: activeThread ? activeThread.messages : [],
             attachments: (activeProject.pendingAttachments || []).map((item) => ({
               id: item.id,
@@ -1838,8 +2397,14 @@ class VSWirksController {
               activeThread && activeThread.workflowPresetId
                 ? activeThread.workflowPresetId
                 : "freeform",
+            selectedAgentProfileId:
+              activeThread && activeThread.agentProfileId
+                ? activeThread.agentProfileId
+                : activeProject.defaultAgentProfileId || this.settings.defaultAgentProfileId,
             selectedModel:
-              activeThread && activeThread.model ? activeThread.model : AUTO_MODEL_VALUE,
+              activeThread && (activeThread.modelOverride || activeThread.model)
+                ? activeThread.modelOverride || activeThread.model
+                : AUTO_MODEL_VALUE,
             resolvedModel:
               activeThread && activeThread.lastModelUsed
                 ? activeThread.lastModelUsed
@@ -1878,7 +2443,10 @@ class VSWirksController {
       serviceLabel: this.serviceState.label,
       serviceHealthy: this.serviceState.healthy,
       serviceStarting: this.serviceState.starting,
-      settings: this.settings,
+      settings: {
+        ...this.settings,
+        agentProfiles: this.settings.agentProfiles || getDefaultAgentProfiles()
+      },
       pending: Boolean(this.abortController),
       promptRefining: this.promptRefining,
       statusText: this.lastStatus,
@@ -1988,6 +2556,12 @@ function resolveModelForTask(settings, request) {
 }
 
 function resolveModelRole(request = {}) {
+  if (
+    typeof request.preferredRole === "string" &&
+    ["chat", "builder", "reviewer", "refiner", "editor"].includes(request.preferredRole)
+  ) {
+    return request.preferredRole;
+  }
   if (request.purpose === "refiner") {
     return "refiner";
   }
@@ -2013,6 +2587,20 @@ function resolveModelRole(request = {}) {
     return executionMode === "act" ? "editor" : "builder";
   }
   return "chat";
+}
+
+function normalizeAgentProfileId(value, profiles, fallbackValue = "") {
+  const items = Array.isArray(profiles) ? profiles : getDefaultAgentProfiles();
+  const requested = typeof value === "string" ? value.trim() : "";
+  if (requested && items.some((profile) => profile.id === requested)) {
+    return requested;
+  }
+  const fallback = typeof fallbackValue === "string" ? fallbackValue.trim() : "";
+  if (fallback && items.some((profile) => profile.id === fallback)) {
+    return fallback;
+  }
+  const firstEnabled = items.find((profile) => profile.enabled !== false);
+  return firstEnabled ? firstEnabled.id : "";
 }
 
 function buildPromptRefinerMessages({

@@ -4,227 +4,140 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>VSWirks App</title>
+    <link rel="icon" href="./assets/vswirks-icon.svg" type="image/svg+xml" />
     <link rel="stylesheet" href="./app.css" />
   </head>
   <body>
     <div id="app" class="shell">
       <header class="topbar">
         <div class="brand">
-          <span class="eyebrow">Local-first companion</span>
-          <strong>VSWirks App</strong>
-          <span class="subtitle">specs, approvals, runs, validations, and editor sync</span>
+          <div class="brand-mark">
+            <img class="brand-icon" src="./assets/vswirks-icon.svg" alt="VSWirks icon" />
+            <span class="brand-pulse"></span>
+          </div>
+          <div class="brand-copy">
+            <strong>VSWirks</strong>
+            <span class="subtitle">local-first companion</span>
+          </div>
+          <span class="brand-badge">Studio</span>
         </div>
         <div class="topbar-controls">
-          <select id="mode">
+          <select id="mode" title="Chat is read-only conversation. Agent writes files and acts in your workspace.">
             <option value="chat">Chat</option>
             <option value="agent">Agent</option>
           </select>
-          <select id="workflowPreset"></select>
-          <select id="model"></select>
-          <button id="refreshModels">Refresh</button>
-          <button id="focusChat">Focus Chat</button>
-          <button id="startService">Start Service</button>
-          <span id="serviceStatus" class="pill service offline">Service offline</span>
+          <select id="workflowPreset" title="Pick a workflow preset — controls how prompts are routed (scaffold, review, freeform, etc.)"></select>
+          <select id="agentProfile" title="Per-chat agent profile — app-owned prompt and routing preset"></select>
+          <select id="model" title="Select the AI model used for this session"></select>
+          <button id="refreshModels" class="icon-btn" title="Re-fetch available models from the local runtime">↻</button>
+          <button id="focusChat" class="icon-btn" title="Toggle focus mode — hides sidebar to give chat full width">⊞</button>
+          <button id="startService" class="ghost-button" title="Start the local AI runtime service (Ollama / MLX backend)">Start</button>
+          <span id="serviceStatus" class="pill service offline" title="Shows whether the local AI runtime is online and responding">Offline</span>
         </div>
       </header>
 
       <div class="bridge-strip">
-        <span id="projectWorkspace" class="pill">No project</span>
-        <span id="bridgeWorkspace" class="pill muted">Editor not connected</span>
-        <span id="bridgeFile" class="pill muted hidden"></span>
-        <span id="bridgeSelection" class="pill muted hidden"></span>
-        <button id="syncBridge" class="ghost-button">Sync Editor</button>
+        <span id="projectWorkspace" class="pill" title="Active project workspace root path">No project</span>
+        <span id="bridgeWorkspace" class="pill muted" title="VSCodium/VS Code editor connection status">Editor not connected</span>
+        <span id="bridgeFile" class="pill muted hidden" title="Currently open file in the connected editor"></span>
+        <span id="bridgeSelection" class="pill muted hidden" title="Selected text range in the connected editor"></span>
+        <button id="syncBridge" class="ghost-button" title="Pull the latest editor state — open file, selection, and workspace root">Sync Editor</button>
       </div>
 
       <div class="layout">
         <aside class="left-rail panel">
-          <div class="panel-header">
-            <strong>Projects</strong>
-            <div class="panel-actions">
-              <button id="openProjectFolder" class="ghost-button">Open Folder</button>
-              <button id="setProjectTarget" class="ghost-button">Set Target Folder</button>
-              <button id="openProjectInEditor" class="ghost-button">Reveal In Editor</button>
+          <div class="rail-section">
+            <div class="rail-header">
+              <span class="rail-title">Projects</span>
+              <div class="rail-actions">
+                <button id="openProjectFolder" class="icon-btn" title="Open a folder to create or switch projects">📂</button>
+                <button id="setProjectTarget" class="icon-btn" title="Set the target subfolder where files will be written (defaults to project root)">🎯</button>
+                <button id="openProjectInEditor" class="icon-btn" title="Open the active project folder in VSCodium / VS Code">↗</button>
+              </div>
             </div>
+            <div id="projectList" class="project-list"></div>
           </div>
-          <div id="projectList" class="project-list"></div>
-
-          <div class="panel-header compact">
-            <strong>Chats</strong>
-            <button id="newChat" class="primary compact-button">Start New Chat</button>
+          <div class="rail-section">
+            <div class="rail-header">
+              <span class="rail-title">Chats</span>
+              <button id="newChat" class="primary compact-button" title="Start a new chat thread for the active project">+ New</button>
+            </div>
+            <div id="threadList" class="thread-list"></div>
           </div>
-          <div id="threadList" class="thread-list"></div>
         </aside>
 
         <main class="center-pane">
           <section id="attachments" class="attachments hidden"></section>
           <section id="messages" class="messages"></section>
-          <section class="composer panel">
-            <div class="composer-actions">
-              <button id="attachFile">Attach File</button>
-              <button id="attachImage">Attach Image</button>
-              <button id="attachEditorSelection">Attach Editor Selection</button>
-              <button id="stop" class="danger hidden">Stop</button>
+
+          <div id="progressBar" class="progress-bar hidden">
+            <div class="progress-track">
+              <div id="progressFill" class="progress-fill"></div>
             </div>
-            <div class="vibe-bar">
-              <div class="vibe-copy">
-                <strong>Local Vibe</strong>
-                <span id="vibeStatusText" class="meta"
-                  >Hold to talk, generate a spec, then confirm it into Act.</span
-                >
+            <div class="progress-info">
+              <span class="progress-indicator">
+                <span class="progress-dot"></span>
+                <span id="progressLabel" class="progress-label">Thinking...</span>
+              </span>
+              <span id="progressDetail" class="progress-detail"></span>
+              <span id="progressElapsed" class="progress-elapsed"></span>
+            </div>
+          </div>
+
+          <section class="composer">
+            <div class="composer-top">
+              <div class="composer-attach">
+                <button id="attachFile" class="icon-btn" title="Attach a file from disk — its contents will be included in the prompt">📎</button>
+                <button id="attachImage" class="icon-btn" title="Attach an image — it will be sent as a vision input to the model">🖼</button>
+                <button id="attachEditorSelection" class="icon-btn" title="Grab the current selection from the connected editor and attach it">✂️</button>
+                <button id="stop" class="danger hidden" title="Abort the current run immediately">Stop</button>
               </div>
-              <div class="vibe-actions">
-                <button id="vibeHold" class="accent-button" type="button">Hold To Talk</button>
-                <button id="vibeClear" class="ghost-button" type="button">Clear Voice Draft</button>
-                <button id="vibeBuildSpec" class="ghost-button" type="button">
-                  Generate Vibe Spec
-                </button>
-                <button id="vibeConfirmAct" class="primary" type="button">
-                  Confirm Spec -> Act
-                </button>
+              <div class="vibe-compact">
+                <button id="vibeHold" class="accent-button" type="button" title="Hold to record voice — release to transcribe into the prompt box">🎙 Hold</button>
+                <button id="vibeClear" class="ghost-button" type="button" title="Clear the voice transcript draft">Clear</button>
+                <button id="vibeBuildSpec" class="ghost-button" type="button" title="Generate a structured spec from the voice transcript">Vibe Spec</button>
+                <button id="vibeConfirmAct" class="primary" type="button" title="Confirm the generated spec and switch to Act mode to execute it">Confirm → Act</button>
+                <span id="vibeStatusText" class="meta"></span>
               </div>
             </div>
             <div id="vibeTranscript" class="vibe-transcript hidden"></div>
             <textarea
               id="prompt"
-              rows="4"
+              rows="3"
               placeholder="Ask for a review, scaffold a repository, or switch to Agent mode to act in the workspace."
             ></textarea>
             <div class="send-row">
-              <div class="intent-inline">
-                <strong>Execution</strong>
-                <span id="executionModeLabel">Plan only</span>
+              <div class="mode-switch">
+                <span class="mode-label">Plan</span>
                 <input id="executionMode" type="range" min="0" max="1" step="1" value="0" />
-                <span class="intent-end">Plan</span>
-                <span class="intent-end">Act</span>
+                <span class="mode-label">Act</span>
+                <span id="executionModeLabel" class="meta"></span>
               </div>
-              <label class="pause-toggle">
+              <label class="pause-toggle" title="When checked, the run pauses after generating a spec so you can review before acting">
                 <input id="pauseAfterSpec" type="checkbox" />
-                <span>Pause After Spec</span>
+                <span>Pause</span>
               </label>
-              <div class="send-actions">
-                <button id="buildSpec" class="ghost-button">Build Spec</button>
-                <button id="refinePrompt" class="ghost-button">Refine Prompt</button>
-                <span id="status" class="status">Ready</span>
-                <button id="send" class="primary">Send</button>
-              </div>
+              <button id="buildSpec" class="ghost-button" title="Generate a structured spec from your prompt without executing it">Spec</button>
+              <button id="refinePrompt" class="ghost-button" title="Ask the model to improve your prompt before sending">Refine</button>
+              <span id="status" class="status" title="Current run status">Ready</span>
+              <button id="send" class="primary" title="Send the prompt to the model using the selected mode and workflow">Send</button>
             </div>
           </section>
         </main>
-
-        <aside class="right-rail panel">
-          <details class="settings-card" open>
-            <summary>Workflow</summary>
-            <div id="workflowSummary" class="info-card"></div>
-            <div id="quickActions" class="quick-actions"></div>
-          </details>
-
-          <details class="settings-card">
-            <summary>Model Roles</summary>
-            <div class="settings-grid">
-              <label>
-                <span>Chat</span>
-                <select id="modelRoleChat"></select>
-              </label>
-              <label>
-                <span>Builder</span>
-                <select id="modelRoleBuilder"></select>
-              </label>
-              <label>
-                <span>Reviewer</span>
-                <select id="modelRoleReviewer"></select>
-              </label>
-              <label>
-                <span>Refiner</span>
-                <select id="modelRoleRefiner"></select>
-              </label>
-              <label>
-                <span>Editor</span>
-                <select id="modelRoleEditor"></select>
-              </label>
-            </div>
-            <div class="settings-actions">
-              <button id="saveModelRoles">Save Roles</button>
-            </div>
-          </details>
-
-          <details class="settings-card">
-            <summary>Runtime Defaults</summary>
-            <div class="settings-grid">
-              <label>
-                <span>Chat Temperature</span>
-                <input id="chatTemperature" type="number" min="0" max="2" step="0.05" />
-              </label>
-              <label>
-                <span>Chat Top P</span>
-                <input id="chatTopP" type="number" min="0.1" max="1" step="0.05" />
-              </label>
-              <label>
-                <span>Chat Max Tokens</span>
-                <input id="chatMaxTokens" type="number" min="256" max="8192" step="128" />
-              </label>
-              <label>
-                <span>Agent Temperature</span>
-                <input id="agentTemperature" type="number" min="0" max="2" step="0.05" />
-              </label>
-              <label>
-                <span>Agent Top P</span>
-                <input id="agentTopP" type="number" min="0.1" max="1" step="0.05" />
-              </label>
-              <label>
-                <span>Agent Max Tokens</span>
-                <input id="agentMaxTokens" type="number" min="256" max="8192" step="128" />
-              </label>
-            </div>
-            <div class="settings-actions">
-              <button id="saveGenerationSettings">Save Defaults</button>
-              <button id="resetGenerationSettings">Restore Defaults</button>
-            </div>
-          </details>
-
-          <details class="settings-card" open>
-            <summary>Project Intelligence</summary>
-            <div id="projectIntelligenceSummary" class="info-card"></div>
-          </details>
-
-          <details class="settings-card" open>
-            <summary>Validation</summary>
-            <div id="validationSummary" class="info-card"></div>
-          </details>
-
-          <details class="settings-card">
-            <summary>Context</summary>
-            <div class="context-grid">
-              <div>
-                <span class="label">Project Root</span>
-                <code id="contextProjectRoot">None</code>
-              </div>
-              <div>
-                <span class="label">Target Folder</span>
-                <code id="contextTargetPath">None</code>
-              </div>
-              <div>
-                <span class="label">Editor File</span>
-                <code id="contextEditorFile">None</code>
-              </div>
-              <div>
-                <span class="label">Bridge File</span>
-                <code id="contextBridgePath">None</code>
-              </div>
-            </div>
-          </details>
-        </aside>
       </div>
 
       <section class="drawer panel">
-        <div class="panel-header">
-          <strong>Run Workspace</strong>
-          <span id="runSummary" class="drawer-status">No active runs</span>
-        </div>
         <div class="drawer-tabs">
-          <button class="tab-button active" data-tab="spec">Spec</button>
-          <button class="tab-button" data-tab="run">Run</button>
-          <button class="tab-button" data-tab="diff">Diff</button>
-          <button class="tab-button" data-tab="validation">Validation</button>
+          <button class="tab-button active" data-tab="spec" title="View and edit the structured spec for the current run">Spec</button>
+          <button class="tab-button" data-tab="run" title="Live run timeline — tool calls, file writes, and agent events">Run</button>
+          <button class="tab-button" data-tab="diff" title="File diffs — see exactly what the agent changed in your workspace">Diff</button>
+          <button class="tab-button" data-tab="validation" title="Post-run validation results — lint, tests, and health checks">Validation</button>
+          <span class="drawer-spacer"></span>
+          <button class="tab-button" data-tab="workflow" title="Active workflow preset details and quick-action shortcuts">Workflow</button>
+          <button class="tab-button" data-tab="intelligence" title="Detected frameworks, manifests, and project health signals">Intelligence</button>
+          <button class="tab-button" data-tab="settings" title="Model roles and runtime generation defaults (temperature, tokens, etc.)">Settings</button>
+          <button class="tab-button" data-tab="context" title="Current paths — project root, target folder, editor file, bridge state">Context</button>
+          <span id="runSummary" class="drawer-status">No active runs</span>
         </div>
         <div class="drawer-panels">
           <section id="panelSpec" class="drawer-panel active">
@@ -238,6 +151,138 @@
           </section>
           <section id="panelValidation" class="drawer-panel">
             <div id="validationPanel" class="drawer-card"></div>
+          </section>
+          <section id="panelWorkflow" class="drawer-panel">
+            <div id="workflowSummary" class="drawer-card info-card"></div>
+            <div id="quickActions" class="quick-actions"></div>
+          </section>
+          <section id="panelIntelligence" class="drawer-panel">
+            <div id="projectIntelligenceSummary" class="drawer-card info-card"></div>
+            <div id="validationSummary" class="drawer-card info-card"></div>
+          </section>
+          <section id="panelSettings" class="drawer-panel">
+            <div class="settings-columns">
+              <div class="settings-col">
+                <h4>Model Roles</h4>
+                <div class="settings-grid">
+                  <label><span>Chat</span><select id="modelRoleChat"></select></label>
+                  <label><span>Builder</span><select id="modelRoleBuilder"></select></label>
+                  <label><span>Reviewer</span><select id="modelRoleReviewer"></select></label>
+                  <label><span>Refiner</span><select id="modelRoleRefiner"></select></label>
+                  <label><span>Editor</span><select id="modelRoleEditor"></select></label>
+                </div>
+                <button id="saveModelRoles" class="primary compact-button">Save Roles</button>
+              </div>
+              <div class="settings-col">
+                <h4>Runtime Defaults</h4>
+                <div class="settings-grid">
+                  <label><span>Chat Temp</span><input id="chatTemperature" type="number" min="0" max="2" step="0.05" /></label>
+                  <label><span>Chat Top P</span><input id="chatTopP" type="number" min="0.1" max="1" step="0.05" /></label>
+                  <label><span>Chat Max Tok</span><input id="chatMaxTokens" type="number" min="256" max="8192" step="128" /></label>
+                  <label><span>Agent Temp</span><input id="agentTemperature" type="number" min="0" max="2" step="0.05" /></label>
+                  <label><span>Agent Top P</span><input id="agentTopP" type="number" min="0.1" max="1" step="0.05" /></label>
+                  <label><span>Agent Max Tok</span><input id="agentMaxTokens" type="number" min="256" max="8192" step="128" /></label>
+                </div>
+                <div class="settings-actions">
+                  <button id="saveGenerationSettings" class="primary compact-button">Save</button>
+                  <button id="resetGenerationSettings" class="ghost-button compact-button">Reset</button>
+                </div>
+              </div>
+              <div class="settings-col">
+                <h4>Agents / Prompting</h4>
+                <div class="settings-grid">
+                  <label><span>Project Default Agent</span><select id="projectDefaultAgentProfile"></select></label>
+                  <label><span>Workspace Default Agent</span><select id="defaultAgentProfile"></select></label>
+                </div>
+                <label class="settings-textarea">
+                  <span>Global System Prompt</span>
+                  <textarea id="globalSystemPrompt" rows="4" placeholder="Applied to every app-owned run after the base local-first prompt."></textarea>
+                </label>
+                <label class="settings-textarea">
+                  <span>Thread System Prompt Override</span>
+                  <textarea id="threadSystemPromptOverride" rows="4" placeholder="Applied to the current chat after the selected agent profile prompt."></textarea>
+                </label>
+                <div class="settings-actions">
+                  <button id="savePromptingSettings" class="primary compact-button">Save Prompting</button>
+                  <button id="saveThreadPrompting" class="ghost-button compact-button">Save Thread</button>
+                </div>
+                <div class="settings-grid">
+                  <label><span>Next Run Model</span><select id="nextRunModel"></select></label>
+                </div>
+                <label class="settings-textarea">
+                  <span>Next Run System Prompt</span>
+                  <textarea id="nextRunSystemPrompt" rows="3" placeholder="Optional one-shot override. Cleared after the next send or build."></textarea>
+                </label>
+                <div class="settings-actions">
+                  <button id="refreshPromptPreview" class="ghost-button compact-button">Preview Prompt</button>
+                </div>
+                <pre id="promptPreview" class="info-pre prompt-preview">Prompt preview will appear here.</pre>
+              </div>
+              <div class="settings-col">
+                <h4>Agent Profiles</h4>
+                <div class="settings-grid">
+                  <label><span>Edit Profile</span><select id="agentProfileEditor"></select></label>
+                  <label><span>Preferred Role</span>
+                    <select id="agentProfilePreferredRole">
+                      <option value="">Auto</option>
+                      <option value="chat">Chat</option>
+                      <option value="builder">Builder</option>
+                      <option value="reviewer">Reviewer</option>
+                      <option value="refiner">Refiner</option>
+                      <option value="editor">Editor</option>
+                    </select>
+                  </label>
+                  <label><span>Default Mode</span>
+                    <select id="agentProfileDefaultMode">
+                      <option value="chat">Chat</option>
+                      <option value="agent">Agent</option>
+                    </select>
+                  </label>
+                  <label><span>Default Execution</span>
+                    <select id="agentProfileDefaultExecutionMode">
+                      <option value="plan">Plan</option>
+                      <option value="act">Act</option>
+                    </select>
+                  </label>
+                  <label><span>Linked Workflow</span><select id="agentProfileLinkedWorkflow"></select></label>
+                  <label><span>Model Override</span><select id="agentProfileModelOverride"></select></label>
+                </div>
+                <label class="settings-textarea">
+                  <span>Label</span>
+                  <input id="agentProfileLabel" type="text" placeholder="Agent label" />
+                </label>
+                <label class="settings-textarea">
+                  <span>Description</span>
+                  <textarea id="agentProfileDescription" rows="2" placeholder="What this agent is for."></textarea>
+                </label>
+                <label class="settings-textarea">
+                  <span>Prompt Prefix</span>
+                  <textarea id="agentProfilePromptPrefix" rows="2" placeholder="Prepended to the user request before attachments and execution directives."></textarea>
+                </label>
+                <label class="settings-textarea">
+                  <span>System Prompt</span>
+                  <textarea id="agentProfileSystemPrompt" rows="5" placeholder="Applied between the global system prompt and the thread override."></textarea>
+                </label>
+                <label class="checkbox-row">
+                  <input id="agentProfileEnabled" type="checkbox" />
+                  <span>Enabled</span>
+                </label>
+                <div class="settings-actions">
+                  <button id="newAgentProfile" class="ghost-button compact-button">New</button>
+                  <button id="duplicateAgentProfile" class="ghost-button compact-button">Duplicate</button>
+                  <button id="saveAgentProfile" class="primary compact-button">Save Profile</button>
+                  <button id="deleteAgentProfile" class="danger compact-button">Delete</button>
+                </div>
+              </div>
+            </div>
+          </section>
+          <section id="panelContext" class="drawer-panel">
+            <div class="context-grid">
+              <div><span class="label">Project Root</span><code id="contextProjectRoot">None</code></div>
+              <div><span class="label">Target Folder</span><code id="contextTargetPath">None</code></div>
+              <div><span class="label">Editor File</span><code id="contextEditorFile">None</code></div>
+              <div><span class="label">Bridge File</span><code id="contextBridgePath">None</code></div>
+            </div>
           </section>
         </div>
       </section>

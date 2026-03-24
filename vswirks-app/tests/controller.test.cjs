@@ -16,6 +16,11 @@ function createController(options = {}) {
   const sent = [];
   const controller = new VSWirksController(
     {
+      isDestroyed() {
+        return false;
+      },
+      show() {},
+      focus() {},
       webContents: {
         send(...args) {
           sent.push(args);
@@ -54,6 +59,59 @@ test("reconcileBridgeProject adopts the bridge workspace into an empty project",
   assert.equal(adopted, true);
   assert.equal(project.workspaceRoot, "/tmp/vswirks-demo");
   assert.equal(project.targetPath, "/tmp/vswirks-demo/apps/web");
+});
+
+test("reconcileBridgeProject switches to an existing bridge workspace and updates its target", () => {
+  const controller = createController();
+  const first = createProjectSession({
+    name: "one",
+    workspaceRoot: "/tmp/one",
+    targetPath: "/tmp/one"
+  });
+  const second = createProjectSession({
+    name: "two",
+    workspaceRoot: "/tmp/two",
+    targetPath: "/tmp/two"
+  });
+  controller.projects = [first, second];
+  controller.activeProjectId = first.id;
+  controller.bridgeState = {
+    workspaceRoots: ["/tmp/two"],
+    activeWorkspaceRoot: "",
+    workspaceTarget: "/tmp/two/apps/api"
+  };
+
+  const adopted = controller.reconcileBridgeProject();
+  const project = controller.getActiveProject();
+
+  assert.equal(adopted, true);
+  assert.equal(project.id, second.id);
+  assert.equal(project.workspaceRoot, "/tmp/two");
+  assert.equal(project.targetPath, "/tmp/two/apps/api");
+});
+
+test("reconcileBridgeProject creates a project for a new bridge workspace", () => {
+  const controller = createController();
+  const existing = createProjectSession({
+    name: "one",
+    workspaceRoot: "/tmp/one",
+    targetPath: "/tmp/one"
+  });
+  controller.projects = [existing];
+  controller.activeProjectId = existing.id;
+  controller.bridgeState = {
+    workspaceRoots: ["/tmp/fresh"],
+    activeWorkspaceRoot: "",
+    workspaceTarget: "/tmp/fresh"
+  };
+
+  const adopted = controller.reconcileBridgeProject();
+  const project = controller.getActiveProject();
+
+  assert.equal(adopted, true);
+  assert.equal(project.workspaceRoot, "/tmp/fresh");
+  assert.equal(project.targetPath, "/tmp/fresh");
+  assert.equal(controller.projects.some((entry) => entry.workspaceRoot === "/tmp/fresh"), true);
 });
 
 test("switchProject refreshes intelligence and syncs editor state for the selected project", async () => {
@@ -113,10 +171,42 @@ test("setTargetPath rejects folders outside the active project root", async () =
     const ok = await controller.setTargetPath({});
 
     assert.equal(ok, false);
-    assert.match(controller._events[0].message, /Target folder must stay inside the active project root/);
+    assert.match(
+      controller._events[0].message,
+      /Target folder must stay inside the active project root/
+    );
   } finally {
     await fs.rm(tmpRoot, { recursive: true, force: true });
     await fs.rm(outside, { recursive: true, force: true });
+  }
+});
+
+test("syncEditorToProject opens the workspace root before a nested target path", async () => {
+  const calls = [];
+  const controller = createController({
+    dependencies: {
+      openInVSWirksEditor: async (targetPath) => {
+        calls.push(targetPath);
+        return true;
+      }
+    }
+  });
+  const tmpRoot = await fs.mkdtemp(path.join(os.tmpdir(), "vswirks-sync-root-"));
+  const nestedTarget = path.join(tmpRoot, "apps", "desktop");
+  await fs.mkdir(nestedTarget, { recursive: true });
+  const project = createProjectSession({
+    name: "repo",
+    workspaceRoot: tmpRoot,
+    targetPath: nestedTarget
+  });
+
+  try {
+    const ok = await controller.syncEditorToProject(project);
+
+    assert.equal(ok, true);
+    assert.deepEqual(calls, [tmpRoot]);
+  } finally {
+    await fs.rm(tmpRoot, { recursive: true, force: true });
   }
 });
 
@@ -331,4 +421,102 @@ test("sendPrompt can reuse an existing spec without regenerating it", async () =
   assert.equal(ok, true);
   assert.equal(buildCount, 0);
   assert.equal(captured.specDraft.id, spec.id);
+});
+
+test("applyBridgeHandoffRequest seeds a chat from the editor handoff contract", async () => {
+  let bridgePatch = null;
+  const controller = createController({
+    dependencies: {
+      updateBridgeState: async (patch) => {
+        bridgePatch = patch;
+        return patch;
+      }
+    }
+  });
+  controller.bridgeState = {
+    appHandoffRequest: {
+      prompt: "Review this repo end to end.",
+      workspaceRoot: "/tmp/vswirks-handoff",
+      targetPath: "/tmp/vswirks-handoff/apps/web",
+      requestedWorkflowId: "review-repo",
+      requestedAgentProfileId: "review-analyst",
+      requestedMode: "chat",
+      requestedExecutionMode: "plan",
+      attachmentsSummary: ["file: src/app.js"],
+      requestedAt: 10
+    }
+  };
+
+  const ok = await controller.applyBridgeHandoffRequest();
+  const project = controller.getActiveProject();
+  const thread = controller.getActiveThread(project);
+
+  assert.equal(ok, true);
+  assert.equal(project.workspaceRoot, "/tmp/vswirks-handoff");
+  assert.equal(project.targetPath, "/tmp/vswirks-handoff/apps/web");
+  assert.equal(thread.agentProfileId, "review-analyst");
+  assert.equal(thread.draftPrompt, "Review this repo end to end.");
+  assert.match(thread.messages[0].content, /Seeded from VSWirks Editor handoff/);
+  assert.equal(
+    bridgePatch.appHandoffRequest.requestedWorkflowId,
+    "review-repo"
+  );
+  assert.equal(bridgePatch.appHandoffRequest.seededThreadId, thread.id);
+});
+
+test("getPromptPreview composes the app global, agent, and thread prompt layers", async () => {
+  const controller = createController();
+  const tmpRoot = await fs.mkdtemp(path.join(os.tmpdir(), "vswirks-preview-"));
+  await fs.mkdir(path.join(tmpRoot, ".github"), { recursive: true });
+  await fs.writeFile(
+    path.join(tmpRoot, ".github", "copilot-instructions.md"),
+    "Use the repo conventions.",
+    "utf8"
+  );
+
+  try {
+    controller.settings.globalSystemPrompt = "Global prompt";
+    controller.settings.agentProfiles = [
+      {
+        id: "app-default",
+        label: "App Default",
+        systemPrompt: "Default prompt",
+        enabled: true
+      },
+      {
+        id: "review-analyst",
+        label: "Review Analyst",
+        preferredRole: "reviewer",
+        systemPrompt: "Agent profile prompt",
+        enabled: true
+      }
+    ];
+    controller.settings.defaultAgentProfileId = "app-default";
+
+    const project = createProjectSession({
+      name: "repo",
+      workspaceRoot: tmpRoot,
+      targetPath: tmpRoot,
+      defaultAgentProfileId: "review-analyst"
+    });
+    const thread = project.threads[0];
+    thread.agentProfileId = "review-analyst";
+    thread.systemPromptOverride = "Thread prompt";
+    controller.projects = [project];
+    controller.activeProjectId = project.id;
+
+    const preview = await controller.getPromptPreview({
+      prompt: "Review the repository.",
+      workflowPresetId: "review-repo",
+      agentProfileId: "review-analyst"
+    });
+
+    assert.equal(preview.ok, true);
+    assert.match(preview.preview, /Workspace instructions:\nUse the repo conventions\./);
+    assert.match(preview.preview, /Global system prompt:\nGlobal prompt/);
+    assert.match(preview.preview, /Agent profile \(Review Analyst\):\nAgent profile prompt/);
+    assert.match(preview.preview, /Thread override prompt:\nThread prompt/);
+  } finally {
+    await fs.rm(tmpRoot, { recursive: true, force: true });
+  }
 });

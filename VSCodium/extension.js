@@ -28,7 +28,9 @@ const {
   safeJsonParse: sharedSafeJsonParse,
   limitText: sharedLimitText,
   titleFromPrompt: sharedTitleFromPrompt,
-  looksLikeRepoCreationRequest: sharedLooksLikeRepoCreationRequest
+  looksLikeRepoCreationRequest: sharedLooksLikeRepoCreationRequest,
+  normalizeAgentProfileList: sharedNormalizeAgentProfileList,
+  getDefaultAgentProfiles: sharedGetDefaultAgentProfiles
 } = require("../shared/core");
 
 const VIEW_ID = "bluewirksLocalAgent.chatView";
@@ -104,44 +106,36 @@ const QUICK_ACTIONS = [
       "Review the attached file. Prioritize bugs, risky behavior, regressions, and missing tests."
   },
   {
-    id: "scaffoldFromImage",
-    label: "Scaffold From Photo",
-    description: "Attach a screenshot or photo and scaffold a real repo from it.",
-    mode: "agent",
-    executionMode: "act",
-    attach: "image",
+    id: "editSelection",
+    label: "Edit Selection",
+    description: "Attach the current selection and draft a cleaner replacement.",
+    mode: "chat",
+    executionMode: "plan",
+    attach: "selection",
     prompt:
-      "Create a complete React project structure from the attached image, including Tailwind CSS styling that matches the reference as closely as possible. If the workspace is empty, scaffold the full repository here with real source files, configuration, and a README."
+      "Rewrite the attached selection. Return the updated code first, then briefly explain the key change."
   },
   {
-    id: "scaffoldFeature",
-    label: "Scaffold Feature",
-    description: "Switch to agent mode and propose the file plan before editing.",
+    id: "handoffBuild",
+    label: "Run In App",
+    description: "Escalate the current workspace task into the full VSWirks App build flow.",
     mode: "agent",
     executionMode: "act",
     attach: "none",
+    handoff: true,
     prompt:
-      "Scaffold this feature in the current workspace. If the workspace is empty, create a full production-ready repository here, not a demo. First outline the file plan, then make the necessary edits or additions."
+      "Continue this task in VSWirks App and use the full scaffold/review orchestration flow for the current workspace."
   },
   {
-    id: "refactorFile",
-    label: "Refactor File",
-    description: "Attach the current file and refactor it with explicit tradeoffs.",
-    mode: "agent",
-    executionMode: "act",
-    attach: "file",
+    id: "handoffReview",
+    label: "Full Review",
+    description: "Hand the current repo or feature into the app for a deeper review run.",
+    mode: "chat",
+    executionMode: "plan",
+    attach: "none",
+    handoff: true,
     prompt:
-      "Refactor the attached file for clarity and maintainability. Explain the tradeoffs before changing behavior."
-  },
-  {
-    id: "generateTests",
-    label: "Add Tests",
-    description: "Attach the current file and generate focused tests around its behavior.",
-    mode: "agent",
-    executionMode: "act",
-    attach: "file",
-    prompt:
-      "Generate or update focused tests for the attached file. Cover important behavior, edge cases, and regressions."
+      "Open this workspace in VSWirks App and run a full repo review with findings first."
   }
 ];
 
@@ -286,23 +280,18 @@ class NativeChatIntegration {
     const userPrompt = await buildNativePrompt(request, commandSpec);
     const messages = await buildNativeApiMessages(context.history, userPrompt);
 
-    if (commandSpec.mode === "agent") {
-      const result = await this.runAgentRequest(commandSpec, model, messages, response, token);
-      const footer = touchedPathsMarkdown(result.touchedPaths);
-      if (footer) {
-        response.markdown(footer);
-      }
+    if (commandSpec.handoffToApp) {
+      await this.handoffNativeRequest(request, commandSpec, response);
       response.button({
-        command: "bluewirksLocalAgent.focus",
-        title: "Open VSWirks Editor Sidebar"
+        command: "bluewirksLocalAgent.openCompanionApp",
+        title: "Open VSWirks App"
       });
       return {
         metadata: {
           command: commandSpec.name,
-          mode: commandSpec.mode,
+          mode: "handoff",
           executionMode: commandSpec.executionMode,
-          model,
-          touchedPaths: result.touchedPaths
+          model
         }
       };
     }
@@ -376,6 +365,28 @@ class NativeChatIntegration {
           }
         ];
     }
+  }
+
+  async handoffNativeRequest(request, commandSpec, response) {
+    const prompt = await buildNativePrompt(request, commandSpec);
+    await updateBridgeState({
+      appHandoffRequest: {
+        prompt,
+        workspaceRoot: getOptionalWorkspaceRootPath(),
+        targetPath: getWorkspaceTargetPath(),
+        requestedWorkflowId: commandSpec.workflowId || inferWorkflowPresetFromPrompt(prompt, []),
+        requestedAgentProfileId: "",
+        requestedMode: commandSpec.mode,
+        requestedExecutionMode: commandSpec.executionMode,
+        attachmentsSummary: summarizeNativeReferences(request.references || []),
+        requestedAt: Date.now(),
+        requestedBy: "VSWirks Native Chat"
+      }
+    });
+    await vscode.commands.executeCommand("bluewirksLocalAgent.openCompanionApp");
+    response.markdown(
+      "Handed off to VSWirks App for full build/review orchestration. Continue there for staged repo work, validation, and resumable runs."
+    );
   }
 
   async runChatRequest(commandSpec, model, messages, response, token) {
@@ -529,6 +540,12 @@ class BlueWirksAgentViewProvider {
       starting: false,
       label: "Service offline"
     };
+    this.appOwnedSettings = {
+      globalSystemPrompt: "",
+      defaultAgentProfileId: "app-default",
+      agentProfiles: sharedGetDefaultAgentProfiles(),
+      modelRoles: {}
+    };
     this.appSelectionPollHandle = undefined;
     this.appSelectionPollBusy = false;
 
@@ -632,7 +649,23 @@ class BlueWirksAgentViewProvider {
     return this.threads.find((thread) => thread.id === threadId);
   }
 
+  async refreshAppOwnedSettings() {
+    const stored = await readSettings();
+    this.appOwnedSettings = {
+      globalSystemPrompt:
+        typeof stored.globalSystemPrompt === "string" ? stored.globalSystemPrompt.trim() : "",
+      defaultAgentProfileId:
+        typeof stored.defaultAgentProfileId === "string" && stored.defaultAgentProfileId.trim()
+          ? stored.defaultAgentProfileId.trim()
+          : "app-default",
+      agentProfiles: normalizeAgentProfileList(stored.agentProfiles),
+      modelRoles:
+        stored && stored.modelRoles && typeof stored.modelRoles === "object" ? stored.modelRoles : {}
+    };
+  }
+
   async handleConfigurationChange() {
+    await this.refreshAppOwnedSettings();
     await this.refreshRuntimeState();
     await this.syncBridgeState();
     this.postState();
@@ -833,6 +866,7 @@ class BlueWirksAgentViewProvider {
     );
 
     void this.syncBridgeState();
+    void this.refreshAppOwnedSettings().then(() => this.postState());
     this.postState();
   }
 
@@ -850,7 +884,11 @@ class BlueWirksAgentViewProvider {
       mode: seed && seed.mode ? seed.mode : this.lastMode,
       executionMode:
         seed && seed.executionMode ? seed.executionMode : this.lastExecutionMode,
-      model: seed && seed.model ? seed.model : ""
+      model: seed && seed.model ? seed.model : "",
+      agentProfileId:
+        seed && typeof seed.agentProfileId === "string"
+          ? seed.agentProfileId
+          : this.appOwnedSettings.defaultAgentProfileId || "app-default"
     });
     this.threads = [thread, ...this.threads].slice(0, MAX_STORED_THREADS);
     this.activeThreadId = thread.id;
@@ -894,6 +932,22 @@ class BlueWirksAgentViewProvider {
     this.lastMode = thread.mode || this.lastMode;
     this.lastExecutionMode = thread.executionMode || this.lastExecutionMode;
     this.lastStatus = "Ready";
+    this.schedulePersist();
+    this.postState();
+  }
+
+  async updateThreadSettings(payload) {
+    const thread = this.getActiveThread();
+    if (!thread) {
+      return;
+    }
+    if (typeof payload.model === "string") {
+      thread.model = payload.model.trim();
+    }
+    if (typeof payload.agentProfileId === "string") {
+      thread.agentProfileId = payload.agentProfileId.trim();
+    }
+    touchThread(this.threads, thread.id);
     this.schedulePersist();
     this.postState();
   }
@@ -991,6 +1045,7 @@ class BlueWirksAgentViewProvider {
   async handleWebviewMessage(message) {
     switch (message.type) {
       case "ready":
+        await this.refreshAppOwnedSettings();
         this.postState();
         await this.refreshRuntimeState();
         break;
@@ -1003,11 +1058,8 @@ class BlueWirksAgentViewProvider {
       case "openCompanionApp":
         await this.openCompanionApp();
         break;
-      case "saveGenerationSettings":
-        await this.saveGenerationSettings(message.payload || {});
-        break;
-      case "resetGenerationSettings":
-        await this.resetGenerationSettings();
+      case "updateThreadSettings":
+        await this.updateThreadSettings(message.payload || {});
         break;
       case "sendPrompt":
         await this.handlePrompt(message.payload);
@@ -1070,16 +1122,26 @@ class BlueWirksAgentViewProvider {
       await this.attachImageFromPicker();
     }
 
-    this.lastMode = action.mode;
     const thread = this.getActiveThread();
-    thread.mode = action.mode;
-    thread.executionMode = normalizeExecutionMode(action.executionMode);
+    thread.mode = action.handoff ? "chat" : action.mode;
+    thread.executionMode = action.handoff ? "plan" : normalizeExecutionMode(action.executionMode);
+    this.lastMode = thread.mode;
     this.lastExecutionMode = thread.executionMode;
+    if (action.handoff) {
+      await this.handoffToCompanionApp({
+        prompt: action.prompt,
+        workflowId: inferWorkflowFromQuickAction(action.id),
+        requestedMode: action.mode,
+        requestedExecutionMode: action.executionMode,
+        agentProfileId: thread.agentProfileId || ""
+      });
+      return;
+    }
     this.postState();
     this.postToView({
       type: "prefillPrompt",
       prompt: action.prompt,
-      mode: action.mode,
+      agentProfileId: thread.agentProfileId || "",
       executionMode: thread.executionMode
     });
   }
@@ -1124,8 +1186,17 @@ class BlueWirksAgentViewProvider {
       mode: requestedMode,
       executionMode: requestedExecutionMode
     });
-    const mode = effectiveRequest.mode;
-    const executionMode = effectiveRequest.executionMode;
+    const requestedAgentProfileId =
+      typeof payload.agentProfileId === "string" ? payload.agentProfileId.trim() : "";
+    const mode = shouldHandoffPrompt({
+      prompt,
+      attachments: this.pendingAttachments,
+      mode: effectiveRequest.mode,
+      executionMode: effectiveRequest.executionMode
+    })
+      ? "chat"
+      : "chat";
+    const executionMode = "plan";
     const requestedModel = String(payload.model || "").trim();
     const model = requestedModel || (await this.getDefaultModel());
     const userContent = await this.composeUserMessage(prompt, this.pendingAttachments, {
@@ -1137,6 +1208,7 @@ class BlueWirksAgentViewProvider {
     thread.mode = mode;
     thread.executionMode = executionMode;
     thread.model = model;
+    thread.agentProfileId = requestedAgentProfileId || thread.agentProfileId || "";
     this.lastMode = mode;
     this.lastExecutionMode = executionMode;
 
@@ -1161,24 +1233,33 @@ class BlueWirksAgentViewProvider {
     }
     touchThread(this.threads, thread.id);
 
+    const handoffAttachments = [...this.pendingAttachments];
     this.pendingAttachments = [];
+    const shouldHandoff = shouldHandoffPrompt({
+      prompt,
+      attachments: userEntry.attachments,
+      mode: requestedMode,
+      executionMode: requestedExecutionMode
+    });
+    if (shouldHandoff) {
+      await this.handoffToCompanionApp({
+        prompt,
+        workflowId: inferWorkflowPresetFromPrompt(prompt, handoffAttachments),
+        requestedMode,
+        requestedExecutionMode,
+        agentProfileId: thread.agentProfileId || "",
+        attachments: handoffAttachments
+      });
+      return;
+    }
+
     this.pending = true;
-    this.lastStatus = effectiveRequest.autoPromoted
-      ? "Auto-switched to Agent + Act for workspace build"
-      : mode === "agent"
-        ? executionMode === "act"
-          ? "Agent running"
-          : "Planning"
-        : "Thinking";
+    this.lastStatus = "Thinking";
     this.postState({ selectedModel: model });
     this.abortController = new AbortController();
 
     try {
-      if (mode === "agent") {
-        await this.runAgentMode(model, executionMode);
-      } else {
-        await this.runChatMode(model, executionMode);
-      }
+      await this.runChatMode(model, executionMode);
     } catch (error) {
       if (error && error.name === "AbortError") {
         const lastMessage = getLatestAssistantMessage(thread.messages);
@@ -1202,7 +1283,14 @@ class BlueWirksAgentViewProvider {
   }
 
   async composeUserMessage(prompt, attachments, options) {
-    return buildRequestContent(prompt, attachments, options);
+    const context = this.getActivePromptContext();
+    return buildRequestContent(prompt, attachments, {
+      ...options,
+      promptPrefix:
+        context.agentProfile && context.agentProfile.promptPrefix
+          ? context.agentProfile.promptPrefix
+          : ""
+    });
   }
 
   async runChatMode(model, executionMode) {
@@ -1529,7 +1617,12 @@ class BlueWirksAgentViewProvider {
   }
 
   async toApiMessages() {
-    const messages = [{ role: "system", content: await buildWorkspaceSystemPrompt() }];
+    const messages = [
+      {
+        role: "system",
+        content: await buildWorkspaceSystemPrompt(this.getActivePromptContext())
+      }
+    ];
     for (const item of this.getActiveThread().messages) {
       if (item.role === "user") {
         messages.push({ role: "user", content: item.renderedContent || item.content });
@@ -1538,6 +1631,24 @@ class BlueWirksAgentViewProvider {
       }
     }
     return messages;
+  }
+
+  getActivePromptContext() {
+    const thread = this.getActiveThread();
+    const agentProfiles = this.appOwnedSettings.agentProfiles || getDefaultAgentProfiles();
+    const agentProfile =
+      agentProfiles.find(
+        (profile) =>
+          profile.id ===
+          (thread && thread.agentProfileId
+            ? thread.agentProfileId
+            : this.appOwnedSettings.defaultAgentProfileId)
+      ) || null;
+    return {
+      globalSystemPrompt: this.appOwnedSettings.globalSystemPrompt || "",
+      agentProfile,
+      threadSystemPrompt: ""
+    };
   }
 
   addAssistantPlaceholder(model, mode, executionMode) {
@@ -1807,12 +1918,66 @@ class BlueWirksAgentViewProvider {
     return false;
   }
 
+  async handoffToCompanionApp({
+    prompt,
+    workflowId,
+    requestedMode,
+    requestedExecutionMode,
+    agentProfileId,
+    attachments
+  }) {
+    const workspaceRoot = getOptionalWorkspaceRootPath();
+    const targetPath = getWorkspaceTargetPath();
+    const nextRequest = {
+      prompt: String(prompt || "").trim(),
+      workspaceRoot,
+      targetPath,
+      requestedWorkflowId: workflowId || "",
+      requestedAgentProfileId: agentProfileId || "",
+      requestedMode: requestedMode === "agent" ? "agent" : "chat",
+      requestedExecutionMode: requestedExecutionMode === "act" ? "act" : "plan",
+      attachmentsSummary: buildHandoffAttachmentSummary(attachments || this.pendingAttachments),
+      requestedAt: Date.now(),
+      requestedBy: "VSWirks Editor"
+    };
+
+    await updateBridgeState({
+      appHandoffRequest: nextRequest
+    });
+    await this.openCompanionApp();
+    this.lastStatus = "Handed off to VSWirks App";
+
+    const thread = this.getActiveThread();
+    thread.messages.push({
+      id: makeId("assistant"),
+      role: "assistant",
+      content:
+        "Heavy workspace work was handed off to VSWirks App.\n\n" +
+        [
+          nextRequest.requestedWorkflowId
+            ? `Workflow: ${nextRequest.requestedWorkflowId}`
+            : null,
+          workspaceRoot ? `Workspace: ${workspaceRoot}` : null,
+          targetPath && targetPath !== workspaceRoot ? `Target: ${targetPath}` : null
+        ]
+          .filter(Boolean)
+          .join("\n"),
+      model: "",
+      mode: "chat",
+      executionMode: "plan",
+      pending: false,
+      createdAt: Date.now()
+    });
+    touchThread(this.threads, thread.id);
+    this.schedulePersist();
+    this.postState();
+    return true;
+  }
+
   async syncBridgeState() {
     const activeEditor = vscode.window.activeTextEditor;
     const activeDocument = activeEditor ? activeEditor.document : null;
-    const activeWorkspaceFolder = activeDocument
-      ? vscode.workspace.getWorkspaceFolder(activeDocument.uri)
-      : null;
+    const activeWorkspaceRoot = resolveBridgeActiveWorkspaceRoot();
     const selectionText =
       activeEditor && !activeEditor.selection.isEmpty
         ? clampText(activeEditor.document.getText(activeEditor.selection), BRIDGE_SYNC_CHAR_LIMIT)
@@ -1830,17 +1995,18 @@ class BlueWirksAgentViewProvider {
             }
           }
         : null;
+    const workspaceTarget = getOptionalWorkspaceTargetPath();
     const selectedExplorerPath =
-      getOptionalWorkspaceTargetPath() ||
-      (activeDocument ? activeDocument.uri.fsPath : "");
+      workspaceTarget ||
+      (activeDocument ? activeDocument.uri.fsPath : activeWorkspaceRoot);
 
     await updateBridgeState({
       editorName: "VSWirks Editor",
       updatedAt: Date.now(),
       bridgePath: resolveBridgeStatePath(),
       workspaceRoots: (vscode.workspace.workspaceFolders || []).map((folder) => folder.uri.fsPath),
-      activeWorkspaceRoot: activeWorkspaceFolder ? activeWorkspaceFolder.uri.fsPath : "",
-      workspaceTarget: getOptionalWorkspaceTargetPath(),
+      activeWorkspaceRoot,
+      workspaceTarget,
       activeFilePath: activeDocument ? activeDocument.uri.fsPath : "",
       activeFileLabel: activeDocument ? this.getActiveEditorLabel() : "",
       activeLanguageId: activeDocument ? activeDocument.languageId : "",
@@ -1867,15 +2033,23 @@ class BlueWirksAgentViewProvider {
   }
 
   async getDefaultModel() {
-    const configured = migrateLegacyDefaultModel(
-      String(
-      vscode.workspace
-        .getConfiguration("bluewirksLocalAgent")
-        .get("defaultModel", "")
-      ).trim()
-    );
-    if (configured) {
-      return configured;
+    const thread = this.getActiveThread();
+    if (thread && thread.model) {
+      return thread.model;
+    }
+    const selectedProfile =
+      (this.appOwnedSettings.agentProfiles || []).find(
+        (profile) => profile.id === (thread && thread.agentProfileId)
+      ) || null;
+    if (selectedProfile && selectedProfile.modelOverride) {
+      return selectedProfile.modelOverride;
+    }
+    const modelRoles =
+      this.appOwnedSettings && this.appOwnedSettings.modelRoles
+        ? this.appOwnedSettings.modelRoles
+        : {};
+    if (modelRoles.chat) {
+      return modelRoles.chat;
     }
     if (this.modelsCache.length) {
       return this.modelsCache[0];
@@ -1979,18 +2153,21 @@ class BlueWirksAgentViewProvider {
         kind: item.kind
       })),
       mode: thread.mode || this.lastMode,
-      executionMode: thread.executionMode || this.lastExecutionMode || DEFAULT_EXECUTION_MODE,
+      executionMode: "plan",
       selectedModel:
         extra && Object.prototype.hasOwnProperty.call(extra, "selectedModel")
           ? extra.selectedModel
           : thread.model || "",
+      selectedAgentProfileId:
+        thread.agentProfileId || this.appOwnedSettings.defaultAgentProfileId || "app-default",
       pending: this.pending,
       statusText: this.pending ? this.lastStatus || "Working" : this.lastStatus || "Ready",
+      models: this.modelsCache,
       quickActions: QUICK_ACTIONS,
       serviceLabel: this.serviceState.label,
       serviceHealthy: this.serviceState.healthy,
       serviceStarting: this.serviceState.starting,
-      generationSettings: getGenerationSettingsSnapshot(),
+      agentProfiles: this.appOwnedSettings.agentProfiles || getDefaultAgentProfiles(),
       workspaceLabel: this.getWorkspaceLabel(),
       activeEditorLabel: this.getActiveEditorLabel(),
       selectionLabel: this.getSelectionLabel()
@@ -2029,14 +2206,10 @@ class BlueWirksAgentViewProvider {
           <span class="subtitle">editor bridge for VSWirks App</span>
         </div>
         <div class="topbar-controls">
-          <select id="mode" title="Interaction mode">
-            <option value="chat">Chat</option>
-            <option value="agent">Agent</option>
-          </select>
           <select id="model" title="Model"></select>
+          <select id="agentProfile" title="App-owned agent profile"></select>
           <button id="refreshModels" title="Refresh models">Refresh</button>
           <button id="openCompanionApp" title="Open VSWirks App">Open App</button>
-          <button id="togglePanels" title="Hide or show non-chat panels">Focus Chat</button>
           <button id="startService" title="Start ai-runtime">Start Service</button>
           <span id="serviceStatus" class="service-pill offline">Service offline</span>
         </div>
@@ -2054,63 +2227,6 @@ class BlueWirksAgentViewProvider {
           <span id="selectionPill" class="pill muted hidden"></span>
         </div>
         <div id="quickActions" class="quick-actions"></div>
-      </section>
-
-      <details class="settings-strip">
-        <summary class="settings-summary">
-          <div class="settings-header">
-            <strong>Runtime Defaults</strong>
-            <span>Tuned for local review, scaffolding, and controlled agent edits.</span>
-          </div>
-        </summary>
-        <div class="settings-grid">
-          <section class="settings-card">
-            <h3>Chat</h3>
-            <label class="setting-field">
-              <span>Temperature</span>
-              <input id="chatTemperature" type="number" min="0" max="2" step="0.05" />
-            </label>
-            <label class="setting-field">
-              <span>Top P</span>
-              <input id="chatTopP" type="number" min="0.1" max="1" step="0.05" />
-            </label>
-            <label class="setting-field">
-              <span>Max Tokens</span>
-              <input id="chatMaxTokens" type="number" min="256" max="8192" step="128" />
-            </label>
-          </section>
-          <section class="settings-card">
-            <h3>Agent</h3>
-            <label class="setting-field">
-              <span>Temperature</span>
-              <input id="agentTemperature" type="number" min="0" max="2" step="0.05" />
-            </label>
-            <label class="setting-field">
-              <span>Top P</span>
-              <input id="agentTopP" type="number" min="0.1" max="1" step="0.05" />
-            </label>
-            <label class="setting-field">
-              <span>Max Tokens</span>
-              <input id="agentMaxTokens" type="number" min="256" max="8192" step="128" />
-            </label>
-          </section>
-        </div>
-        <div class="settings-actions">
-          <button id="saveGenerationSettings">Save Defaults</button>
-          <button id="resetGenerationSettings">Restore Defaults</button>
-        </div>
-      </details>
-
-      <section class="intent-strip">
-        <div class="intent-copy">
-          <strong>Execution</strong>
-          <span id="executionModeLabel">Plan only</span>
-        </div>
-        <div class="intent-control">
-          <span class="intent-end">Plan</span>
-          <input id="executionMode" class="intent-slider" type="range" min="0" max="1" step="1" value="0" />
-          <span class="intent-end">Act</span>
-        </div>
       </section>
 
       <section id="attachments" class="attachments hidden"></section>
@@ -2173,24 +2289,30 @@ function getNativeChatCommandSpec(command) {
       label: "Scaffold",
       mode: "agent",
       executionMode: "act",
+      handoffToApp: true,
+      workflowId: "scaffold-app",
       instruction:
-        "Plan the file changes briefly, then use workspace tools to scaffold or extend the feature. If the workspace is empty, scaffold a full production-ready repository here."
+        "Escalate this task into VSWirks App so the app can own staged scaffold, validation, and resumable repository work."
     },
     refactor: {
       name: "refactor",
       label: "Refactor",
       mode: "agent",
       executionMode: "act",
+      handoffToApp: true,
+      workflowId: "refactor-module",
       instruction:
-        "Refactor the relevant code for clarity and maintainability. Keep behavior stable unless the user asks otherwise."
+        "Escalate this refactor into VSWirks App when it goes beyond a local explanation or draft."
     },
     test: {
       name: "test",
       label: "Tests",
       mode: "agent",
       executionMode: "act",
+      handoffToApp: true,
+      workflowId: "add-tests",
       instruction:
-        "Generate or update focused tests. Cover important behavior and edge cases."
+        "Escalate this testing task into VSWirks App for broader repo-aware changes."
     }
   };
 
@@ -2245,13 +2367,40 @@ async function buildNativeApiMessages(history, currentPrompt) {
   return messages;
 }
 
-async function buildWorkspaceSystemPrompt() {
+async function buildWorkspaceSystemPrompt(context = {}) {
+  const stored = !context || (!context.globalSystemPrompt && !context.agentProfile)
+    ? await readSettings().catch(() => ({}))
+    : {};
+  const globalSystemPrompt =
+    context && context.globalSystemPrompt
+      ? context.globalSystemPrompt
+      : typeof stored.globalSystemPrompt === "string"
+        ? stored.globalSystemPrompt.trim()
+        : "";
+  const agentProfiles = normalizeAgentProfileList(stored.agentProfiles);
+  const agentProfile =
+    context && context.agentProfile
+      ? context.agentProfile
+      : agentProfiles.find((profile) => profile.id === stored.defaultAgentProfileId) || null;
+  const threadSystemPrompt =
+    context && typeof context.threadSystemPrompt === "string" ? context.threadSystemPrompt.trim() : "";
   const instructions = await readWorkspaceInstructions();
-  if (!instructions) {
-    return DEFAULT_SYSTEM_PROMPT;
+  const segments = [DEFAULT_SYSTEM_PROMPT];
+  if (instructions) {
+    segments.push(`Workspace instructions:\n${instructions}`);
   }
-
-  return `${DEFAULT_SYSTEM_PROMPT}\n\nWorkspace instructions:\n${instructions}`;
+  if (globalSystemPrompt) {
+    segments.push(`Global system prompt:\n${globalSystemPrompt}`);
+  }
+  if (agentProfile && agentProfile.systemPrompt) {
+    segments.push(
+      `Agent profile (${agentProfile.label || agentProfile.id || "default"}):\n${agentProfile.systemPrompt}`
+    );
+  }
+  if (threadSystemPrompt) {
+    segments.push(`Thread override prompt:\n${threadSystemPrompt}`);
+  }
+  return segments.filter(Boolean).join("\n\n");
 }
 
 async function readWorkspaceInstructions() {
@@ -2266,7 +2415,11 @@ async function readWorkspaceInstructions() {
 }
 
 async function buildRequestContent(prompt, attachments, options) {
-  const blocks = [String(prompt || "").trim()];
+  const blocks = [];
+  if (options && options.promptPrefix) {
+    blocks.push(String(options.promptPrefix).trim());
+  }
+  blocks.push(String(prompt || "").trim());
   const hasImageAttachments = attachments.some((item) => item && item.kind === "image");
 
   if (attachments.length) {
@@ -2351,6 +2504,88 @@ async function buildExecutionDirectiveBlock({ prompt, mode, executionMode, hasIm
   }
 
   return lines.join("\n");
+}
+
+function shouldHandoffPrompt({ prompt, attachments, mode, executionMode }) {
+  if (mode === "agent" || executionMode === "act") {
+    return true;
+  }
+  const text = String(prompt || "").toLowerCase();
+  const hasImage = Array.isArray(attachments)
+    ? attachments.some((item) => item && item.kind === "image")
+    : false;
+  if (hasImage) {
+    return true;
+  }
+  return /(scaffold|full repo|repository|build app|create app|generate app|resume run|review repo|image to code)/.test(
+    text
+  );
+}
+
+function inferWorkflowPresetFromPrompt(prompt, attachments) {
+  const text = String(prompt || "").toLowerCase();
+  const hasImage = Array.isArray(attachments)
+    ? attachments.some((item) => item && item.kind === "image")
+    : false;
+  if (hasImage) {
+    return "ui-from-image";
+  }
+  if (/(review|audit|regression|risk)/.test(text)) {
+    return "review-repo";
+  }
+  if (/(test|coverage)/.test(text)) {
+    return "add-tests";
+  }
+  if (/(refactor|cleanup|restructure)/.test(text)) {
+    return "refactor-module";
+  }
+  if (/(fix build|broken|failing|compile|repair)/.test(text)) {
+    return "fix-build";
+  }
+  if (/(create|build|scaffold|bootstrap|app|repo|project)/.test(text)) {
+    return "scaffold-app";
+  }
+  return "freeform";
+}
+
+function inferWorkflowFromQuickAction(actionId) {
+  switch (actionId) {
+    case "handoffBuild":
+      return "scaffold-app";
+    case "handoffReview":
+      return "review-repo";
+    default:
+      return "freeform";
+  }
+}
+
+function buildHandoffAttachmentSummary(attachments) {
+  return Array.isArray(attachments)
+    ? attachments
+        .map((item) => {
+          if (!item || !item.kind) {
+            return "";
+          }
+          return `${item.kind}: ${item.label || "attached context"}`;
+        })
+        .filter(Boolean)
+    : [];
+}
+
+function summarizeNativeReferences(references) {
+  return Array.isArray(references)
+    ? references
+        .map((reference) => {
+          if (!reference) {
+            return "";
+          }
+          if (reference.value && typeof reference.value === "object" && reference.value.fsPath) {
+            return `file: ${reference.value.fsPath}`;
+          }
+          return "";
+        })
+        .filter(Boolean)
+    : [];
 }
 
 async function resolveEffectiveRequestMode(prompt, requested) {
@@ -2740,13 +2975,9 @@ async function clearConfiguredWorkspaceTargetPath() {
 }
 
 async function getConfiguredDefaultModel() {
-  const configured = migrateLegacyDefaultModel(
-    String(
-    vscode.workspace
-      .getConfiguration("bluewirksLocalAgent")
-      .get("defaultModel", "")
-    ).trim()
-  );
+  const stored = await readSettings();
+  const roles = stored && stored.modelRoles && typeof stored.modelRoles === "object" ? stored.modelRoles : {};
+  const configured = typeof roles.chat === "string" ? roles.chat.trim() : "";
   return configured || DEFAULT_MODEL;
 }
 
@@ -3082,6 +3313,22 @@ function getConfiguredWorkspaceTargetPath() {
 function getActiveEditorWorkspaceFolder() {
   const editor = vscode.window.activeTextEditor;
   return editor ? vscode.workspace.getWorkspaceFolder(editor.document.uri) : null;
+}
+
+function resolveBridgeActiveWorkspaceRoot() {
+  const activeFolder = getActiveEditorWorkspaceFolder();
+  if (activeFolder) {
+    return activeFolder.uri.fsPath;
+  }
+
+  const targetPath = getOptionalWorkspaceTargetPath();
+  const targetFolder = targetPath ? getContainingWorkspaceFolderForPath(targetPath) : null;
+  if (targetFolder) {
+    return targetFolder.uri.fsPath;
+  }
+
+  const fallbackFolder = vscode.workspace.workspaceFolders && vscode.workspace.workspaceFolders[0];
+  return fallbackFolder ? fallbackFolder.uri.fsPath : "";
 }
 
 function getContainingWorkspaceFolderForPath(targetPath) {
@@ -3601,6 +3848,8 @@ function timestamp() {
 }
 
 const safeJsonParse = sharedSafeJsonParse;
+const normalizeAgentProfileList = sharedNormalizeAgentProfileList;
+const getDefaultAgentProfiles = sharedGetDefaultAgentProfiles;
 
 function toErrorMessage(error) {
   if (error instanceof Error) {
@@ -3641,6 +3890,8 @@ function createThread(seed) {
     executionMode: normalizeExecutionMode(seed && seed.executionMode),
     writeApprovalMode: normalizeWriteApprovalMode(seed && seed.writeApprovalMode),
     model: seed && typeof seed.model === "string" ? seed.model : "",
+    agentProfileId:
+      seed && typeof seed.agentProfileId === "string" ? seed.agentProfileId : "",
     messages: []
   };
 }
@@ -3666,6 +3917,8 @@ function normalizeThread(thread) {
     executionMode: normalizeExecutionMode(thread.executionMode),
     writeApprovalMode: normalizeWriteApprovalMode(thread.writeApprovalMode),
     model: typeof thread.model === "string" ? thread.model : "",
+    agentProfileId:
+      typeof thread.agentProfileId === "string" ? thread.agentProfileId : "",
     messages
   };
 }

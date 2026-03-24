@@ -287,6 +287,7 @@ async function runConversation({
   workflowPreset,
   specDraft,
   intelligence,
+  promptContext,
   runRecord
 }) {
   const normalizedMode = mode === "agent" ? "agent" : "chat";
@@ -305,13 +306,15 @@ async function runConversation({
     {
       workflowPreset,
       specDraft,
-      intelligence
+      intelligence,
+      promptPrefix: promptContext && promptContext.promptPrefix ? promptContext.promptPrefix : ""
     }
   );
 
   thread.mode = effectiveRequest.mode;
   thread.executionMode = effectiveRequest.executionMode;
   thread.model = typeof modelSelection === "string" ? modelSelection : "";
+  thread.modelOverride = typeof modelSelection === "string" ? modelSelection : "";
   thread.lastModelUsed = model;
   thread.currentRunId = runRecord.id;
 
@@ -378,6 +381,7 @@ async function runConversation({
       workflowPreset,
       specDraft,
       intelligence,
+      promptContext,
       runRecord
     });
     return;
@@ -390,6 +394,10 @@ async function runConversation({
     runtimeBaseUrl,
     signal,
     workspaceRoot: project.targetPath || project.workspaceRoot,
+    promptContext,
+    workflowPreset,
+    specDraft,
+    intelligence,
     onState,
     onStatus,
     onRunEvent
@@ -409,6 +417,10 @@ async function runChatMode({
   runtimeBaseUrl,
   signal,
   workspaceRoot,
+  promptContext,
+  workflowPreset,
+  specDraft,
+  intelligence,
   onState,
   onStatus,
   onRunEvent
@@ -428,7 +440,14 @@ async function runChatMode({
     onState();
   }
 
-  const messages = await toApiMessages(thread, workspaceRoot);
+  const messages = await toApiMessages(thread, workspaceRoot, {
+    workflowPreset,
+    specDraft,
+    intelligence,
+    globalSystemPrompt: promptContext && promptContext.globalSystemPrompt,
+    agentProfile: promptContext && promptContext.agentProfile,
+    threadSystemPrompt: promptContext && promptContext.threadSystemPrompt
+  });
   let usage = undefined;
   await streamRuntimeChat(
     runtimeBaseUrl,
@@ -489,6 +508,7 @@ async function runAgentMode({
   workflowPreset,
   specDraft,
   intelligence,
+  promptContext,
   runRecord
 }) {
   const workspaceRoot = project.targetPath || project.workspaceRoot;
@@ -510,7 +530,10 @@ async function runAgentMode({
   const messages = await toApiMessages(thread, workspaceRoot, {
     workflowPreset,
     specDraft,
-    intelligence
+    intelligence,
+    globalSystemPrompt: promptContext && promptContext.globalSystemPrompt,
+    agentProfile: promptContext && promptContext.agentProfile,
+    threadSystemPrompt: promptContext && promptContext.threadSystemPrompt
   });
   const stagedHandled = await maybeRunStagedScaffoldMode({
     project,
@@ -3199,6 +3222,18 @@ async function buildWorkspaceSystemPrompt(workspaceRoot, context = {}) {
   if (instructions) {
     segments.push(`Workspace instructions:\n${instructions}`);
   }
+  if (context.globalSystemPrompt) {
+    segments.push(`Global system prompt:\n${context.globalSystemPrompt}`);
+  }
+  if (context.agentProfile && context.agentProfile.systemPrompt) {
+    segments.push(
+      `Agent profile (${context.agentProfile.label || context.agentProfile.id || "custom"}):\n` +
+        `${context.agentProfile.systemPrompt}`
+    );
+  }
+  if (context.threadSystemPrompt) {
+    segments.push(`Thread override prompt:\n${context.threadSystemPrompt}`);
+  }
   if (context.workflowPreset && context.workflowPreset.label) {
     segments.push(
       `Workflow preset: ${context.workflowPreset.label}\n` +
@@ -3225,7 +3260,11 @@ async function readWorkspaceInstructions(workspaceRoot) {
 }
 
 async function buildRequestContent(prompt, attachments, options, workspaceRoot, context = {}) {
-  const blocks = [String(prompt || "").trim()];
+  const blocks = [];
+  if (context.promptPrefix) {
+    blocks.push(String(context.promptPrefix).trim());
+  }
+  blocks.push(String(prompt || "").trim());
   const hasImageAttachments = attachments.some((item) => item && item.kind === "image");
 
   if (attachments.length) {
@@ -4936,6 +4975,7 @@ function emitCheckpoint(onRunCheckpoint, checkpoint) {
 
 module.exports = {
   runConversation,
+  buildWorkspaceSystemPrompt,
   buildDeterministicBootstrapManifest,
   evaluateRepoMaterializationManifest,
   evaluatePhaseMaterializationManifest,
