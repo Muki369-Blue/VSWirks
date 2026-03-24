@@ -65,6 +65,22 @@
 
   const elements = {
     app: document.getElementById("app"),
+    viewStudio: document.getElementById("viewStudio"),
+    viewProjects: document.getElementById("viewProjects"),
+    studioView: document.getElementById("studioView"),
+    studioMessages: document.getElementById("studioMessages"),
+    studioPrompt: document.getElementById("studioPrompt"),
+    studioSend: document.getElementById("studioSend"),
+    studioStatus: document.getElementById("studioStatus"),
+    studioDeepResearch: document.getElementById("studioDeepResearch"),
+    studioWebTools: document.getElementById("studioWebTools"),
+    studioQuickResponse: document.getElementById("studioQuickResponse"),
+    studioVoice: document.getElementById("studioVoice"),
+    studioVoiceTest: document.getElementById("studioVoiceTest"),
+    studioVoiceInput: document.getElementById("studioVoiceInput"),
+    studioProjectList: document.getElementById("studioProjectList"),
+    studioNewProject: document.getElementById("studioNewProject"),
+    studioNewChat: document.getElementById("studioNewChat"),
     mode: document.getElementById("mode"),
     workflowPreset: document.getElementById("workflowPreset"),
     agentProfile: document.getElementById("agentProfile"),
@@ -224,6 +240,11 @@
   let draftSyncHandle = null;
 
   let drawerTab = persisted.drawerTab || "spec";
+  let activeView = "studio";
+  const studioFeatures = { deepResearch: false, webTools: false, quickResponse: true };
+  let studioVoiceId = "";
+  let studioLastSpokenId = "";
+
   const progress = {
     startedAt: 0,
     timer: null,
@@ -250,13 +271,31 @@
     elements.app.classList.add("focus-chat");
   }
 
+  let isFirstState = true;
+  let lastActiveProjectId = "";
+
   api.onState((payload) => {
     const wasPending = state.pending;
+    const prevProjectId = state.activeProjectId;
     state = {
       ...state,
       ...payload
     };
     hydratePromptDraftFromState();
+
+    // On first load: open Studio fresh, clear transient UI
+    if (isFirstState) {
+      isFirstState = false;
+      elements.prompt.value = "";
+      switchView("studio");
+    }
+
+    // Detect project switch → jump to most recent step
+    if (state.activeProjectId && state.activeProjectId !== prevProjectId && prevProjectId) {
+      navigateToProjectLatest();
+    }
+    lastActiveProjectId = state.activeProjectId || "";
+
     // Track progress transitions
     if (state.pending && !wasPending) {
       startProgress();
@@ -331,10 +370,203 @@
     return "Working";
   }
 
+  // ── Studio view ─────────────────────────────────────
+
+  function switchView(view) {
+    activeView = view;
+    elements.app.classList.toggle("view-studio", view === "studio");
+    elements.app.classList.toggle("view-projects", view === "projects");
+    elements.viewStudio.classList.toggle("active", view === "studio");
+    elements.viewProjects.classList.toggle("active", view === "projects");
+    if (view === "studio") {
+      renderStudioMessages();
+      requestAnimationFrame(() => elements.studioPrompt.focus());
+    } else {
+      navigateToProjectLatest();
+    }
+  }
+
+  function renderStudioMessages() {
+    const history = state.activeProject ? state.activeProject.history || [] : [];
+    elements.studioMessages.innerHTML = "";
+
+    if (!history.length || history.every((m) => m.role === "system")) {
+      const welcome = document.createElement("div");
+      welcome.className = "studio-welcome";
+      welcome.innerHTML = [
+        "<h2>What are you working on?</h2>",
+        "<p>Your local-first dev companion. Ask anything — code questions, debugging, architecture, tooling. Everything runs on your machine.</p>",
+        '<div class="feature-hints">',
+        '<span class="hint">Deep Research</span>',
+        '<span class="hint">Web Tools</span>',
+        '<span class="hint">Quick Response</span>',
+        "</div>"
+      ].join("");
+      elements.studioMessages.appendChild(welcome);
+      return;
+    }
+
+    history.forEach((item) => {
+      if (item.role === "system" || item.role === "tool") return;
+      const card = document.createElement("div");
+      card.className = `message-card ${item.role}`;
+      const header = document.createElement("div");
+      header.className = "message-header";
+      header.textContent = item.role === "user" ? "You" : "Studio";
+      card.appendChild(header);
+      const body = document.createElement("div");
+      body.className = "message-body";
+      body.textContent = item.content || "";
+      card.appendChild(body);
+      if (item.role === "assistant" && !state.pending) {
+        const actions = document.createElement("div");
+        actions.className = "message-actions";
+        const copyBtn = document.createElement("button");
+        copyBtn.className = "ghost-button compact-button";
+        copyBtn.textContent = "Copy";
+        copyBtn.addEventListener("click", () => navigator.clipboard.writeText(item.content || ""));
+        actions.appendChild(copyBtn);
+        const speakBtn = document.createElement("button");
+        speakBtn.className = "ghost-button compact-button";
+        speakBtn.textContent = "Speak";
+        speakBtn.addEventListener("click", () => speakText(item.content || ""));
+        actions.appendChild(speakBtn);
+        card.appendChild(actions);
+      }
+      elements.studioMessages.appendChild(card);
+    });
+
+    // Auto-speak latest assistant response
+    const lastAssistant = [...history].reverse().find((m) => m.role === "assistant");
+    if (lastAssistant && lastAssistant.id !== studioLastSpokenId && !state.pending && studioVoiceId) {
+      studioLastSpokenId = lastAssistant.id;
+      speakText(lastAssistant.content || "");
+    }
+
+    requestAnimationFrame(() => {
+      elements.studioMessages.scrollTop = elements.studioMessages.scrollHeight;
+    });
+  }
+
+  function renderStudioProjects() {
+    elements.studioProjectList.innerHTML = "";
+    (state.projects || []).forEach((project) => {
+      const chip = document.createElement("button");
+      chip.className = `studio-project-chip${project.id === state.activeProjectId ? " active" : ""}`;
+      chip.type = "button";
+      chip.title = project.workspaceRoot || project.name;
+      chip.addEventListener("click", () => {
+        void api.invoke("vswirks:switchProject", { id: project.id });
+      });
+
+      const name = document.createElement("strong");
+      name.textContent = project.name;
+      chip.appendChild(name);
+
+      const meta = document.createElement("div");
+      meta.className = "meta";
+      meta.textContent = project.currentRunStatus || `${project.threadCount} chat${project.threadCount !== 1 ? "s" : ""}`;
+      chip.appendChild(meta);
+
+      elements.studioProjectList.appendChild(chip);
+    });
+  }
+
+  function renderStudioStatus() {
+    elements.studioStatus.textContent = state.statusText || "Ready";
+    elements.studioSend.disabled = state.pending || !elements.studioPrompt.value.trim();
+  }
+
+  function studioSendPrompt() {
+    const prompt = elements.studioPrompt.value.trim();
+    if (!prompt || state.pending) return;
+
+    const features = [];
+    if (studioFeatures.deepResearch) features.push("deep-research");
+    if (studioFeatures.webTools) features.push("web-tools");
+    if (studioFeatures.quickResponse) features.push("quick-response");
+
+    void api.invoke("vswirks:sendPrompt", {
+      prompt,
+      mode: "chat",
+      executionMode: "plan",
+      workflowPresetId: "freeform",
+      agentProfileId: "",
+      model: getRequestedModel(),
+      studioMode: true,
+      studioFeatures: features
+    });
+    elements.studioPrompt.value = "";
+  }
+
+  // ── Voice synthesis ────────────────────────────────
+
+  function populateStudioVoices() {
+    const all = speechSynthesis.getVoices().filter((v) => v.lang.startsWith("en"));
+    const picked = all.slice(0, 6);
+    elements.studioVoice.innerHTML = '<option value="">Off</option>';
+    picked.forEach((v) => {
+      const opt = document.createElement("option");
+      opt.value = v.voiceURI;
+      opt.textContent = v.name.replace(/\s*\(.*\)/, "").trim();
+      elements.studioVoice.appendChild(opt);
+    });
+  }
+
+  function speakText(text) {
+    if (!studioVoiceId || !text) return;
+    speechSynthesis.cancel();
+    const utterance = new SpeechSynthesisUtterance(text.slice(0, 2000));
+    const voice = speechSynthesis.getVoices().find((v) => v.voiceURI === studioVoiceId);
+    if (voice) utterance.voice = voice;
+    utterance.rate = 1.05;
+    speechSynthesis.speak(utterance);
+  }
+
+  if (typeof speechSynthesis !== "undefined") {
+    populateStudioVoices();
+    speechSynthesis.addEventListener("voiceschanged", populateStudioVoices);
+  }
+
+  function navigateToProjectLatest() {
+    const ap = state.activeProject;
+    if (!ap) return;
+
+    // Pick the best drawer tab based on project state
+    const hasActiveRun = ap.activeRun && ap.activeRun.status !== "complete";
+    const hasValidation = ap.activeRun && ap.activeRun.validation && ap.activeRun.validation.status;
+    const hasSpec = ap.activeSpec && ap.activeSpec.raw;
+    const runStatus = (ap.currentRunStatus || "").toLowerCase();
+
+    if (hasActiveRun || /running|streaming|paused|queued/i.test(runStatus)) {
+      drawerTab = "run";
+    } else if (hasValidation && /failed/i.test(ap.activeRun.validation.status)) {
+      drawerTab = "validation";
+    } else if (/complete/i.test(runStatus)) {
+      drawerTab = "diff";
+    } else if (hasSpec) {
+      drawerTab = "spec";
+    } else {
+      drawerTab = "spec";
+    }
+
+    // Scroll messages to bottom after next render
+    requestAnimationFrame(() => {
+      elements.messages.scrollTop = elements.messages.scrollHeight;
+    });
+  }
+
   function render() {
+    renderModels();
+    renderStatus();
+    if (activeView === "studio") {
+      renderStudioProjects();
+      renderStudioMessages();
+      renderStudioStatus();
+      return;
+    }
     syncTopbarControls();
     renderTabs();
-    renderModels();
     renderWorkflowPresets();
     renderAgentSelectors();
     renderProjects();
@@ -349,7 +581,6 @@
     renderRunPanel();
     renderDiffPanel();
     renderValidationPanel();
-    renderStatus();
     renderProjectControls();
     applyPromptPlaceholder();
     rememberUi();
@@ -1862,6 +2093,28 @@
       executionMode: elements.executionMode.value === "1" ? "act" : "plan"
     });
   });
+  // ── Studio listeners ──
+  elements.viewStudio.addEventListener("click", () => switchView("studio"));
+  elements.viewProjects.addEventListener("click", () => switchView("projects"));
+  elements.studioSend.addEventListener("click", studioSendPrompt);
+  elements.studioPrompt.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); studioSendPrompt(); }
+  });
+  elements.studioPrompt.addEventListener("input", () => renderStudioStatus());
+  elements.studioDeepResearch.addEventListener("change", (e) => { studioFeatures.deepResearch = e.target.checked; });
+  elements.studioWebTools.addEventListener("change", (e) => { studioFeatures.webTools = e.target.checked; });
+  elements.studioQuickResponse.addEventListener("change", (e) => { studioFeatures.quickResponse = e.target.checked; });
+  elements.studioVoice.addEventListener("change", (e) => { studioVoiceId = e.target.value; });
+  elements.studioVoiceTest.addEventListener("click", () => {
+    speakText("Hey, what are you working on? I'm your local dev companion.");
+  });
+  elements.studioNewProject.addEventListener("click", () => {
+    void api.invoke("vswirks:createProject");
+  });
+  elements.studioNewChat.addEventListener("click", () => {
+    void api.invoke("vswirks:newChat", { mode: "chat", executionMode: "plan" });
+  });
+
   elements.attachFile.addEventListener("click", () => {
     void api.invoke("vswirks:attachFile");
   });

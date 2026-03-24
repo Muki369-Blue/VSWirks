@@ -21,6 +21,10 @@
           </div>
           <span class="brand-badge">Studio</span>
         </div>
+        <nav class="view-switcher">
+          <button id="viewStudio" class="view-tab active" title="Studio — local-first AI chat companion">Studio</button>
+          <button id="viewProjects" class="view-tab" title="Projects — scaffold, build, and manage repos">Projects</button>
+        </nav>
         <div class="topbar-controls">
           <select id="mode" title="Chat is read-only conversation. Agent writes files and acts in your workspace.">
             <option value="chat">Chat</option>
@@ -42,6 +46,50 @@
         <span id="bridgeFile" class="pill muted hidden" title="Currently open file in the connected editor"></span>
         <span id="bridgeSelection" class="pill muted hidden" title="Selected text range in the connected editor"></span>
         <button id="syncBridge" class="ghost-button" title="Pull the latest editor state — open file, selection, and workspace root">Sync Editor</button>
+      </div>
+
+      <div id="studioView" class="studio-view">
+        <aside class="studio-sidebar">
+          <div class="studio-sidebar-header">
+            <span>Projects</span>
+            <button id="studioNewProject" class="icon-btn" title="Open a folder to create or switch projects">📂</button>
+          </div>
+          <div id="studioProjectList" class="studio-project-list"></div>
+          <div class="studio-sidebar-footer">
+            <button id="studioNewChat" class="ghost-button compact-button" title="Start a fresh Studio chat (no project context)">+ New Chat</button>
+          </div>
+        </aside>
+        <div class="studio-main">
+        <div class="studio-toolbar">
+          <div class="studio-toggles">
+            <label class="studio-toggle" title="Thorough, deeply researched answers with references">
+              <input id="studioDeepResearch" type="checkbox" /><span>Deep Research</span>
+            </label>
+            <label class="studio-toggle" title="Reference web resources and current developer tooling">
+              <input id="studioWebTools" type="checkbox" /><span>Web Tools</span>
+            </label>
+            <label class="studio-toggle" title="Quick, concise answers — still high quality">
+              <input id="studioQuickResponse" type="checkbox" checked /><span>Quick Response</span>
+            </label>
+          </div>
+          <div class="studio-voice">
+            <label>Voice</label>
+            <select id="studioVoice" title="Select an English voice for reading responses aloud">
+              <option value="">Off</option>
+            </select>
+            <button id="studioVoiceTest" class="ghost-button compact-button" title="Test the selected voice">Test</button>
+          </div>
+        </div>
+        <section id="studioMessages" class="messages studio-messages"></section>
+        <section class="studio-composer">
+          <textarea id="studioPrompt" rows="3" placeholder="What are you working on?"></textarea>
+          <div class="studio-send-row">
+            <button id="studioVoiceInput" class="icon-btn" title="Hold to speak — voice input">🎙</button>
+            <span id="studioStatus" class="status">Ready</span>
+            <button id="studioSend" class="primary" title="Send message">Send</button>
+          </div>
+        </section>
+        </div>
       </div>
 
       <div class="layout">

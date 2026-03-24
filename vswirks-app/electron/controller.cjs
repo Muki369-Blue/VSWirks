@@ -1526,6 +1526,27 @@ class VSWirksController {
         }
       );
 
+      // Studio mode: prepend developer-companion system prompt
+      if (payload.studioMode) {
+        const directives = [];
+        const features = Array.isArray(payload.studioFeatures) ? payload.studioFeatures : [];
+        directives.push(
+          "You are a developer's local-first AI companion called VSWirks Studio.",
+          "Be conversational, practical, and developer-casual in tone.",
+          "Give real answers, not filler. Be direct."
+        );
+        if (features.includes("deep-research")) {
+          directives.push("Provide thorough, deeply researched answers with references and rationale.");
+        }
+        if (features.includes("web-tools")) {
+          directives.push("Reference web resources, current tooling, and ecosystem context when relevant.");
+        }
+        if (features.includes("quick-response")) {
+          directives.push("Keep your answer concise and actionable -- aim for brief practical guidance.");
+        }
+        runRecord.resolvedSystemPrompt = directives.join(" ") + "\n\n" + (runRecord.resolvedSystemPrompt || "");
+      }
+
       await this.dependencies.runConversation({
         project,
         thread,
