@@ -22,6 +22,7 @@ const IPC_CHANNELS = Object.freeze([
   "vswirks:resumeRun",
   "vswirks:replayRun",
   "vswirks:forkRunCheckpoint",
+  "vswirks:uploadSpec",
   "vswirks:useMessageAsSpec",
   "vswirks:reviewGeneratedFiles",
   "vswirks:revealRunFiles",

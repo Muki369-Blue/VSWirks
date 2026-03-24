@@ -62,7 +62,7 @@ const { isImagePath, createImageAttachment } = require("./image-tools.cjs");
 const { runConversation, buildWorkspaceSystemPrompt } = require("./runner.cjs");
 
 const AUTO_MODEL_VALUE = "__auto__";
-const LEGACY_CODER_MODEL = "qwen2.5-coder:14b-instruct";
+const LEGACY_CODER_MODEL = "mlx/Qwen3.5-27B-Claude-4.6-Opus-Distilled-MLX-6bit";
 const DEFAULT_CODER_MODEL = "devstral-small-2";
 const DEFAULT_CHAT_MODEL = "llama3.3-8b-thinking:q6";
 const DEFAULT_AGENT_PROFILE_ID = "app-default";
@@ -169,6 +169,8 @@ class VSWirksController {
         return this.replayRun(payload || {});
       case "vswirks:forkRunCheckpoint":
         return this.forkRunCheckpoint(payload || {});
+      case "vswirks:uploadSpec":
+        return this.uploadSpec();
       case "vswirks:useMessageAsSpec":
         return this.useMessageAsSpec(payload || {});
       case "vswirks:reviewGeneratedFiles":
@@ -1848,6 +1850,77 @@ class VSWirksController {
     project.activeThreadId = forked.id;
     touchProject(this.projects, project.id);
     this.lastStatus = `Forked from checkpoint: ${checkpoint.label}`;
+    await this.persistState();
+    this.postState();
+    return true;
+  }
+
+  async uploadSpec() {
+    const project = this.getActiveProject();
+    const thread = this.getActiveThread(project);
+    if (!project || !thread) {
+      return false;
+    }
+    const picked = await dialog.showOpenDialog(this.window, {
+      title: "Upload a spec file",
+      properties: ["openFile"],
+      filters: [
+        {
+          name: "Spec files",
+          extensions: ["md", "txt", "json", "yaml", "yml"]
+        }
+      ]
+    });
+    if (picked.canceled || !picked.filePaths.length) {
+      return false;
+    }
+    const filePath = picked.filePaths[0];
+    const raw = await fs.readFile(filePath, "utf8").catch(() => "");
+    if (!raw.trim()) {
+      this.emitEvent({ type: "error", message: "Spec file is empty" });
+      return false;
+    }
+
+    let parsed = {};
+    const ext = path.extname(filePath).toLowerCase();
+    if (ext === ".json") {
+      parsed = safeJsonParse(raw) || {};
+    } else {
+      // Extract structured fields from markdown headings
+      const goalMatch = raw.match(/^#+\s*(?:goal|objective|summary)[:\s]*(.*)/im);
+      const titleMatch = raw.match(/^#+\s+(.+)/m);
+      parsed.goal = goalMatch ? goalMatch[1].trim() : clampText(raw, 240);
+      parsed.title = titleMatch ? titleMatch[1].trim() : path.basename(filePath, ext);
+    }
+
+    const specDraft = createSpecDraft({
+      threadId: thread.id,
+      workflowId: thread.workflowPresetId || "scaffold-app",
+      status: "draft",
+      title: parsed.title || inferSpecTitle(raw),
+      goal: parsed.goal || clampText(raw, 240),
+      stack: parsed.stack || [],
+      constraints: parsed.constraints || [],
+      deliverables: parsed.deliverables || [],
+      acceptance_criteria: parsed.acceptance_criteria || [],
+      validation_plan: parsed.validation_plan || [],
+      implementation_plan: parsed.implementation_plan || [],
+      raw,
+      generatedFrom: `file:${filePath}`,
+      model: "uploaded"
+    });
+
+    this.saveSpecDraft(project, thread, specDraft);
+    // Also inject a user message so the spec shows in chat history
+    thread.messages.push({
+      id: makeId("user"),
+      role: "user",
+      content: `[Uploaded spec: ${path.basename(filePath)}]\n\n${clampText(raw, 8000)}`,
+      mode: thread.mode,
+      executionMode: thread.executionMode,
+      createdAt: Date.now()
+    });
+    this.lastStatus = `Spec loaded from ${path.basename(filePath)}`;
     await this.persistState();
     this.postState();
     return true;

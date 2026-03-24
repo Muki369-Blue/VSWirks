@@ -89,6 +89,7 @@
     attachFile: document.getElementById("attachFile"),
     attachImage: document.getElementById("attachImage"),
     attachEditorSelection: document.getElementById("attachEditorSelection"),
+    uploadSpec: document.getElementById("uploadSpec"),
     stop: document.getElementById("stop"),
     vibeHold: document.getElementById("vibeHold"),
     vibeClear: document.getElementById("vibeClear"),
@@ -1869,6 +1870,9 @@
   });
   elements.attachEditorSelection.addEventListener("click", () => {
     void api.invoke("vswirks:attachEditorSelection");
+  });
+  elements.uploadSpec.addEventListener("click", () => {
+    void api.invoke("vswirks:uploadSpec");
   });
   elements.stop.addEventListener("click", () => {
     void api.invoke("vswirks:abort");
