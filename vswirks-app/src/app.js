@@ -8,6 +8,55 @@
     div.textContent = text;
     return div.innerHTML;
   }
+
+  /** Lightweight Markdown → HTML (safe: all text is escaped first). */
+  function renderMarkdown(raw) {
+    const safe = escapeHtml(raw);
+    let html = safe;
+
+    // Fenced code blocks: ```lang\n...\n```
+    html = html.replace(/```(\w*)\n([\s\S]*?)```/g, (_m, lang, code) => {
+      const cls = lang ? ` class="lang-${lang}"` : "";
+      return `<pre class="md-code-block"><code${cls}>${code.trimEnd()}</code></pre>`;
+    });
+
+    // Inline code
+    html = html.replace(/`([^`\n]+)`/g, '<code class="md-inline-code">$1</code>');
+
+    // Headers (h1-h3)
+    html = html.replace(/^### (.+)$/gm, "<h4>$1</h4>");
+    html = html.replace(/^## (.+)$/gm, "<h3>$1</h3>");
+    html = html.replace(/^# (.+)$/gm, "<h2>$1</h2>");
+
+    // Bold / italic
+    html = html.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
+    html = html.replace(/\*(.+?)\*/g, "<em>$1</em>");
+
+    // Unordered lists (- item)
+    html = html.replace(/^- (.+)$/gm, "<li>$1</li>");
+    html = html.replace(/(<li>[\s\S]*?<\/li>)/g, "<ul>$1</ul>");
+    // Collapse adjacent <ul> tags
+    html = html.replace(/<\/ul>\s*<ul>/g, "");
+
+    // Ordered lists (1. item)
+    html = html.replace(/^\d+\. (.+)$/gm, "<li>$1</li>");
+
+    // Blockquotes
+    html = html.replace(/^&gt; (.+)$/gm, "<blockquote>$1</blockquote>");
+    html = html.replace(/<\/blockquote>\s*<blockquote>/g, "<br>");
+
+    // Horizontal rules
+    html = html.replace(/^---$/gm, "<hr>");
+
+    // Line breaks → paragraphs (double newline)
+    html = html.replace(/\n{2,}/g, "</p><p>");
+    html = `<p>${html}</p>`;
+    // Clean up empty paragraphs
+    html = html.replace(/<p>\s*<\/p>/g, "");
+
+    return html;
+  }
+
   const SpeechRecognitionConstructor =
     window.SpeechRecognition || window.webkitSpeechRecognition || null;
 
@@ -87,6 +136,36 @@
     studioProjectList: document.getElementById("studioProjectList"),
     studioNewProject: document.getElementById("studioNewProject"),
     studioNewChat: document.getElementById("studioNewChat"),
+    studioProjectContext: document.getElementById("studioProjectContext"),
+    studioProjectLabel: document.getElementById("studioProjectLabel"),
+    studioClearProject: document.getElementById("studioClearProject"),
+    studioExport: document.getElementById("studioExport"),
+    studioImport: document.getElementById("studioImport"),
+    studioTemplateSelect: document.getElementById("studioTemplateSelect"),
+    studioGitPanel: document.getElementById("studioGitPanel"),
+    studioRefreshGit: document.getElementById("studioRefreshGit"),
+    studioSearch: document.getElementById("studioSearch"),
+    studioSearchResults: document.getElementById("studioSearchResults"),
+    studioFileChanges: document.getElementById("studioFileChanges"),
+    studioModelPanel: document.getElementById("studioModelPanel"),
+    studioRefreshModels: document.getElementById("studioRefreshModels"),
+    studioModelName: document.getElementById("studioModelName"),
+    studioPullModel: document.getElementById("studioPullModel"),
+    studioTabChat: document.getElementById("studioTabChat"),
+    studioTabTerminal: document.getElementById("studioTabTerminal"),
+    studioTabCompare: document.getElementById("studioTabCompare"),
+    studioTerminal: document.getElementById("studioTerminal"),
+    studioTerminalOutput: document.getElementById("studioTerminalOutput"),
+    studioTerminalInput: document.getElementById("studioTerminalInput"),
+    studioTerminalRun: document.getElementById("studioTerminalRun"),
+    studioCompare: document.getElementById("studioCompare"),
+    compareModelA: document.getElementById("compareModelA"),
+    compareModelB: document.getElementById("compareModelB"),
+    compareRun: document.getElementById("compareRun"),
+    compareHeaderA: document.getElementById("compareHeaderA"),
+    compareHeaderB: document.getElementById("compareHeaderB"),
+    compareResultA: document.getElementById("compareResultA"),
+    compareResultB: document.getElementById("compareResultB"),
     mode: document.getElementById("mode"),
     workflowPreset: document.getElementById("workflowPreset"),
     agentProfile: document.getElementById("agentProfile"),
@@ -422,7 +501,11 @@
       card.appendChild(header);
       const body = document.createElement("div");
       body.className = "message-body";
-      body.textContent = item.content || "";
+      if (item.role === "assistant") {
+        body.innerHTML = renderMarkdown(item.content || "");
+      } else {
+        body.textContent = item.content || "";
+      }
       card.appendChild(body);
       if (item.role === "assistant" && !state.pending) {
         const actions = document.createElement("div");
@@ -469,6 +552,11 @@
       name.textContent = project.name;
       chip.appendChild(name);
 
+      const root = document.createElement("div");
+      root.className = "meta path";
+      root.textContent = (project.workspaceRoot || "").replace(/^.*\//, "");
+      chip.appendChild(root);
+
       const meta = document.createElement("div");
       meta.className = "meta";
       meta.textContent = project.currentRunStatus || `${project.threadCount} chat${project.threadCount !== 1 ? "s" : ""}`;
@@ -476,11 +564,205 @@
 
       elements.studioProjectList.appendChild(chip);
     });
+
+    // Project context banner
+    const active = state.activeProject;
+    if (active) {
+      elements.studioProjectContext.style.display = "";
+      elements.studioProjectLabel.textContent = `Chatting about: ${active.name}`;
+      elements.studioPrompt.placeholder = `Ask about ${active.name}…`;
+      refreshGitPanel();
+    } else {
+      elements.studioProjectContext.style.display = "none";
+      elements.studioPrompt.placeholder = "What are you working on?";
+      elements.studioGitPanel.innerHTML = '<span class="meta">Select a project</span>';
+    }
   }
 
   function renderStudioStatus() {
     elements.studioStatus.textContent = state.statusText || "Ready";
     elements.studioSend.disabled = state.pending || !elements.studioPrompt.value.trim();
+  }
+
+  // ── Prompt templates ─────────────────────────────
+
+  const PROMPT_TEMPLATES = [
+    { label: "Explain this code", prompt: "Explain the following code in detail, including what each section does and why:\n\n" },
+    { label: "Find bugs", prompt: "Review the following code for bugs, edge cases, and potential issues. List each problem and suggest a fix:\n\n" },
+    { label: "Write tests", prompt: "Write comprehensive unit tests for the following code. Cover happy paths, edge cases, and error conditions:\n\n" },
+    { label: "Refactor", prompt: "Refactor the following code for better readability and maintainability without changing behavior:\n\n" },
+    { label: "Add docs", prompt: "Add clear documentation comments to the following code. Explain parameters, return values, and behavior:\n\n" },
+    { label: "Optimize", prompt: "Analyze the following code for performance bottlenecks and suggest optimizations:\n\n" },
+    { label: "Security audit", prompt: "Perform a security audit on the following code. Identify vulnerabilities (XSS, injection, auth issues) and suggest fixes:\n\n" },
+    { label: "Architecture review", prompt: "Review the architecture of this project. Identify strengths, weaknesses, and suggest improvements:\n\n" },
+    { label: "Debug error", prompt: "I'm getting the following error. Help me understand the root cause and fix it:\n\n" },
+    { label: "API design", prompt: "Design a clean REST API for the following requirements. Include endpoints, methods, request/response schemas:\n\n" }
+  ];
+
+  function populatePromptTemplates() {
+    elements.studioTemplateSelect.innerHTML = '<option value="">Templates…</option>';
+    PROMPT_TEMPLATES.forEach((tpl, idx) => {
+      const opt = document.createElement("option");
+      opt.value = String(idx);
+      opt.textContent = tpl.label;
+      elements.studioTemplateSelect.appendChild(opt);
+    });
+  }
+
+  // ── Git panel ────────────────────────────────────
+
+  async function refreshGitPanel() {
+    const result = await api.invoke("vswirks:getGitStatus");
+    if (!result || !result.ok) {
+      elements.studioGitPanel.innerHTML = `<span class="meta">${escapeHtml(result && result.error ? result.error : "No git repo")}</span>`;
+      return;
+    }
+    const lines = [
+      `<div class="git-branch">${escapeHtml(result.branch)}</div>`,
+      `<div class="git-changes meta">${result.changes} change${result.changes !== 1 ? "s" : ""}</div>`
+    ];
+    if (result.recentCommits.length) {
+      lines.push('<div class="git-log">');
+      result.recentCommits.slice(0, 5).forEach((c) => {
+        lines.push(`<div class="git-commit meta">${escapeHtml(c)}</div>`);
+      });
+      lines.push("</div>");
+    }
+    elements.studioGitPanel.innerHTML = lines.join("");
+  }
+
+  // ── Model panel ──────────────────────────────────
+
+  async function refreshModelPanel() {
+    const models = await api.invoke("vswirks:listOllamaModels");
+    if (!Array.isArray(models) || !models.length) {
+      elements.studioModelPanel.innerHTML = '<span class="meta">No models found</span>';
+      return;
+    }
+    elements.studioModelPanel.innerHTML = "";
+    models.forEach((m) => {
+      const row = document.createElement("div");
+      row.className = "model-row";
+      const label = document.createElement("span");
+      label.className = "model-name";
+      label.textContent = m.name;
+      label.title = `${m.size} — ${m.modified}`;
+      row.appendChild(label);
+      const del = document.createElement("button");
+      del.className = "icon-btn model-delete";
+      del.textContent = "×";
+      del.title = `Delete ${m.name}`;
+      del.addEventListener("click", async () => {
+        if (!confirm(`Delete model "${m.name}"?`)) return;
+        const result = await api.invoke("vswirks:deleteOllamaModel", { name: m.name });
+        if (result && result.ok) refreshModelPanel();
+      });
+      row.appendChild(del);
+      elements.studioModelPanel.appendChild(row);
+    });
+  }
+
+  // ── File changes ──────────────────────────────────
+
+  function renderFileChanges() {
+    const changes = state.recentFileChanges || [];
+    if (!changes.length) {
+      elements.studioFileChanges.innerHTML = '<span class="meta">No recent changes</span>';
+      return;
+    }
+    elements.studioFileChanges.innerHTML = "";
+    changes.slice(0, 8).forEach((c) => {
+      const row = document.createElement("div");
+      row.className = "file-change-row";
+      row.title = c.file;
+      const icon = c.type === "rename" ? "~" : c.type === "change" ? "M" : "+";
+      row.innerHTML = `<span class="file-change-icon">${icon}</span><span class="file-change-name">${escapeHtml(c.file)}</span>`;
+      elements.studioFileChanges.appendChild(row);
+    });
+  }
+
+  // ── Studio tab switching ──────────────────────────
+
+  let activeStudioPanel = "chat";
+
+  function switchStudioPanel(panel) {
+    activeStudioPanel = panel;
+    document.querySelectorAll(".studio-tab").forEach((btn) => {
+      btn.classList.toggle("active", btn.dataset.panel === panel);
+    });
+    document.querySelectorAll(".studio-panel").forEach((el) => {
+      el.style.display = el.dataset.panel === panel ? "" : "none";
+    });
+  }
+
+  // ── Terminal ─────────────────────────────────────
+
+  async function runTerminalCommand() {
+    const command = elements.studioTerminalInput.value.trim();
+    if (!command) return;
+
+    const entry = document.createElement("div");
+    entry.className = "terminal-entry";
+    entry.innerHTML = `<span class="terminal-cmd">$ ${escapeHtml(command)}</span>`;
+    elements.studioTerminalOutput.appendChild(entry);
+    elements.studioTerminalInput.value = "";
+
+    const result = await api.invoke("vswirks:runCommand", { command });
+    const output = document.createElement("pre");
+    output.className = "terminal-result";
+    output.textContent = result.output || result.error || "(no output)";
+    if (!result.ok) output.classList.add("terminal-error");
+    entry.appendChild(output);
+    elements.studioTerminalOutput.scrollTop = elements.studioTerminalOutput.scrollHeight;
+  }
+
+  // ── Model A/B compare ───────────────────────────
+
+  function populateCompareModels() {
+    const models = state.models || [];
+    [elements.compareModelA, elements.compareModelB].forEach((sel, idx) => {
+      sel.innerHTML = "";
+      models.forEach((m) => {
+        const opt = document.createElement("option");
+        opt.value = m.id || m;
+        opt.textContent = m.id || m;
+        sel.appendChild(opt);
+      });
+      // Default second model to a different one if possible
+      if (idx === 1 && models.length > 1) sel.selectedIndex = 1;
+    });
+  }
+
+  async function runModelComparison() {
+    const prompt = elements.studioPrompt.value.trim();
+    if (!prompt) { alert("Enter a prompt first"); return; }
+    const modelA = elements.compareModelA.value;
+    const modelB = elements.compareModelB.value;
+    if (!modelA || !modelB) return;
+
+    elements.compareRun.disabled = true;
+    elements.compareRun.textContent = "Comparing…";
+    elements.compareHeaderA.textContent = modelA;
+    elements.compareHeaderB.textContent = modelB;
+    elements.compareResultA.innerHTML = "<em>Loading…</em>";
+    elements.compareResultB.innerHTML = "<em>Loading…</em>";
+
+    const result = await api.invoke("vswirks:compareModels", { prompt, modelA, modelB });
+
+    if (result && result.ok) {
+      elements.compareResultA.innerHTML = result.modelA.error
+        ? `<span class="terminal-error">${escapeHtml(result.modelA.error)}</span>`
+        : renderMarkdown(result.modelA.content || "(empty)");
+      elements.compareResultB.innerHTML = result.modelB.error
+        ? `<span class="terminal-error">${escapeHtml(result.modelB.error)}</span>`
+        : renderMarkdown(result.modelB.content || "(empty)");
+    } else {
+      elements.compareResultA.textContent = result ? result.error : "Failed";
+      elements.compareResultB.textContent = "";
+    }
+
+    elements.compareRun.disabled = false;
+    elements.compareRun.textContent = "Compare";
   }
 
   function studioSendPrompt() {
@@ -534,6 +816,9 @@
     speechSynthesis.addEventListener("voiceschanged", populateStudioVoices);
   }
 
+  populatePromptTemplates();
+  refreshModelPanel();
+
   function navigateToProjectLatest() {
     const ap = state.activeProject;
     if (!ap) return;
@@ -569,6 +854,7 @@
       renderStudioProjects();
       renderStudioMessages();
       renderStudioStatus();
+      renderFileChanges();
       return;
     }
     syncTopbarControls();
@@ -648,6 +934,7 @@
     });
     elements.model.value =
       current === AUTO_MODEL_VALUE || models.includes(current) ? current : AUTO_MODEL_VALUE;
+    populateCompareModels();
   }
 
   function renderWorkflowPresets() {
@@ -2119,6 +2406,79 @@
   });
   elements.studioNewChat.addEventListener("click", () => {
     void api.invoke("vswirks:newChat", { mode: "chat", executionMode: "plan" });
+  });
+  elements.studioClearProject.addEventListener("click", () => {
+    void api.invoke("vswirks:newChat", { mode: "chat", executionMode: "plan" });
+  });
+  elements.studioExport.addEventListener("click", () => {
+    void api.invoke("vswirks:exportConversation");
+  });
+  elements.studioImport.addEventListener("click", async () => {
+    await api.invoke("vswirks:importConversation");
+  });
+  elements.studioTemplateSelect.addEventListener("change", (e) => {
+    const idx = parseInt(e.target.value, 10);
+    if (!isNaN(idx) && PROMPT_TEMPLATES[idx]) {
+      elements.studioPrompt.value = PROMPT_TEMPLATES[idx].prompt;
+      elements.studioPrompt.focus();
+    }
+    e.target.value = "";
+  });
+  let searchDebounce = null;
+  elements.studioSearch.addEventListener("input", () => {
+    clearTimeout(searchDebounce);
+    const query = elements.studioSearch.value.trim();
+    if (!query) {
+      elements.studioSearchResults.innerHTML = "";
+      return;
+    }
+    searchDebounce = setTimeout(async () => {
+      const result = await api.invoke("vswirks:searchProjectFiles", { query });
+      elements.studioSearchResults.innerHTML = "";
+      if (result && result.ok && result.results.length) {
+        result.results.forEach((file) => {
+          const row = document.createElement("div");
+          row.className = "search-result-row";
+          row.textContent = file;
+          row.title = `Click to mention ${file} in chat`;
+          row.addEventListener("click", () => {
+            elements.studioPrompt.value += `\n[${file}] `;
+            elements.studioPrompt.focus();
+          });
+          elements.studioSearchResults.appendChild(row);
+        });
+      } else {
+        elements.studioSearchResults.innerHTML = '<span class="meta">No results</span>';
+      }
+    }, 400);
+  });
+  elements.studioRefreshGit.addEventListener("click", () => refreshGitPanel());
+  elements.studioRefreshModels.addEventListener("click", () => refreshModelPanel());
+
+  // Studio tabs
+  [elements.studioTabChat, elements.studioTabTerminal, elements.studioTabCompare].forEach((btn) => {
+    btn.addEventListener("click", () => switchStudioPanel(btn.dataset.panel));
+  });
+
+  // Terminal
+  elements.studioTerminalRun.addEventListener("click", runTerminalCommand);
+  elements.studioTerminalInput.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") { e.preventDefault(); runTerminalCommand(); }
+  });
+
+  // Model compare
+  elements.compareRun.addEventListener("click", runModelComparison);
+  elements.studioPullModel.addEventListener("click", async () => {
+    const name = elements.studioModelName.value.trim();
+    if (!name) return;
+    elements.studioPullModel.disabled = true;
+    elements.studioPullModel.textContent = "Pulling…";
+    const result = await api.invoke("vswirks:pullOllamaModel", { name });
+    elements.studioPullModel.disabled = false;
+    elements.studioPullModel.textContent = "Pull";
+    elements.studioModelName.value = "";
+    if (result && !result.ok) alert(`Pull failed: ${result.error}`);
+    else refreshModelPanel();
   });
 
   elements.attachFile.addEventListener("click", () => {

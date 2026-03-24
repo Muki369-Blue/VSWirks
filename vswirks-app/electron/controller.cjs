@@ -104,6 +104,259 @@ class VSWirksController {
       defaultAgentProfileId: DEFAULT_AGENT_PROFILE_ID
     };
     this.bridgePollHandle = undefined;
+    this.fileWatcher = null;
+    this.recentFileChanges = [];
+  }
+
+  // ── File watcher ───────────────────────────────────
+
+  startFileWatcher(project) {
+    this.stopFileWatcher();
+    if (!project || !project.workspaceRoot) return;
+    const fsSync = require("fs");
+    try {
+      this.fileWatcher = fsSync.watch(
+        project.workspaceRoot,
+        { recursive: true },
+        (eventType, filename) => {
+          if (!filename) return;
+          // Ignore node_modules, .git, __pycache__, backups
+          if (/node_modules|\.git\/|__pycache__|\.bak\./i.test(filename)) return;
+          const entry = { type: eventType, file: filename, time: Date.now() };
+          this.recentFileChanges.unshift(entry);
+          if (this.recentFileChanges.length > 20) {
+            this.recentFileChanges = this.recentFileChanges.slice(0, 20);
+          }
+          // Debounce state push
+          if (this._fileWatchDebounce) clearTimeout(this._fileWatchDebounce);
+          this._fileWatchDebounce = setTimeout(() => this.postState(), 1000);
+        }
+      );
+    } catch {
+      // fs.watch may fail on some platforms/paths
+    }
+  }
+
+  stopFileWatcher() {
+    if (this.fileWatcher) {
+      this.fileWatcher.close();
+      this.fileWatcher = null;
+    }
+    this.recentFileChanges = [];
+  }
+
+  // ── Conversation export / import ──────────────────
+
+  async exportConversation({ threadId } = {}) {
+    const project = this.getActiveProject();
+    if (!project) return false;
+    const thread = threadId
+      ? (project.threads || []).find((t) => t.id === threadId)
+      : this.getActiveThread(project);
+    if (!thread) return false;
+
+    const result = await dialog.showSaveDialog(this.win, {
+      defaultPath: `${project.name}-${thread.label || "chat"}.json`,
+      filters: [{ name: "JSON", extensions: ["json"] }]
+    });
+    if (result.canceled || !result.filePath) return false;
+
+    const exportData = {
+      version: 1,
+      app: "vswirks",
+      exportedAt: new Date().toISOString(),
+      project: { name: project.name, workspaceRoot: project.workspaceRoot },
+      thread: { label: thread.label, mode: thread.mode },
+      history: thread.history || []
+    };
+    await fs.writeFile(result.filePath, JSON.stringify(exportData, null, 2), "utf-8");
+    return true;
+  }
+
+  async importConversation() {
+    const result = await dialog.showOpenDialog(this.win, {
+      filters: [{ name: "JSON", extensions: ["json"] }],
+      properties: ["openFile"]
+    });
+    if (result.canceled || !result.filePaths.length) return false;
+
+    const raw = await fs.readFile(result.filePaths[0], "utf-8");
+    const data = JSON.parse(raw);
+    if (!data || !Array.isArray(data.history)) {
+      throw new Error("Invalid conversation export file");
+    }
+
+    const project = this.getActiveProject();
+    if (!project) return false;
+
+    const newThread = this.newChat({ mode: "chat", executionMode: "plan" });
+    const thread = this.getActiveThread(project);
+    if (thread) {
+      thread.label = data.thread && data.thread.label ? `Imported: ${data.thread.label}` : "Imported chat";
+      thread.history = data.history;
+    }
+    await this.persistState();
+    this.postState();
+    return true;
+  }
+
+  // ── Ollama model manager ───────────────────────────
+
+  async listOllamaModels() {
+    try {
+      const result = cp.execSync("ollama list", { encoding: "utf-8", timeout: 10000 });
+      const lines = result.trim().split("\n").slice(1); // skip header
+      return lines.map((line) => {
+        const parts = line.split(/\s{2,}/);
+        return {
+          name: parts[0] || "",
+          id: parts[1] || "",
+          size: parts[2] || "",
+          modified: parts[3] || ""
+        };
+      }).filter((m) => m.name);
+    } catch {
+      return [];
+    }
+  }
+
+  async pullOllamaModel({ name } = {}) {
+    if (!name) return { ok: false, error: "No model name provided" };
+    try {
+      cp.execSync(`ollama pull ${name}`, { encoding: "utf-8", timeout: 600000 });
+      await this.refreshRuntimeState(true);
+      this.postState();
+      return { ok: true };
+    } catch (error) {
+      return { ok: false, error: error.message };
+    }
+  }
+
+  async deleteOllamaModel({ name } = {}) {
+    if (!name) return { ok: false, error: "No model name provided" };
+    try {
+      cp.execSync(`ollama rm ${name}`, { encoding: "utf-8", timeout: 30000 });
+      await this.refreshRuntimeState(true);
+      this.postState();
+      return { ok: true };
+    } catch (error) {
+      return { ok: false, error: error.message };
+    }
+  }
+
+  // ── Git status ─────────────────────────────────────
+
+  async getGitStatus({ projectId } = {}) {
+    const project = projectId
+      ? this.projects.find((p) => p.id === projectId)
+      : this.getActiveProject();
+    if (!project || !project.workspaceRoot) {
+      return { ok: false, error: "No project workspace" };
+    }
+    try {
+      const branch = cp.execSync("git rev-parse --abbrev-ref HEAD", {
+        cwd: project.workspaceRoot,
+        encoding: "utf-8",
+        timeout: 5000
+      }).trim();
+      const status = cp.execSync("git status --porcelain", {
+        cwd: project.workspaceRoot,
+        encoding: "utf-8",
+        timeout: 5000
+      }).trim();
+      const logRaw = cp.execSync("git log --oneline -10", {
+        cwd: project.workspaceRoot,
+        encoding: "utf-8",
+        timeout: 5000
+      }).trim();
+      return {
+        ok: true,
+        branch,
+        changes: status ? status.split("\n").length : 0,
+        statusLines: status ? status.split("\n") : [],
+        recentCommits: logRaw ? logRaw.split("\n") : []
+      };
+    } catch (error) {
+      return { ok: false, error: error.message };
+    }
+  }
+
+  // ── Terminal / command runner ────────────────────────
+
+  async runCommand({ command } = {}) {
+    if (!command) return { ok: false, error: "No command" };
+    const project = this.getActiveProject();
+    const cwd = project && project.workspaceRoot ? project.workspaceRoot : os.homedir();
+    try {
+      const output = cp.execSync(command, {
+        cwd,
+        encoding: "utf-8",
+        timeout: 30000,
+        maxBuffer: 1024 * 512
+      });
+      return { ok: true, output: output.slice(0, 10000) };
+    } catch (error) {
+      return {
+        ok: false,
+        output: (error.stdout || "") + (error.stderr || ""),
+        error: error.message
+      };
+    }
+  }
+
+  // ── Model A/B comparison ───────────────────────────
+
+  async compareModels({ prompt, modelA, modelB } = {}) {
+    if (!prompt || !modelA || !modelB) {
+      return { ok: false, error: "Missing prompt, modelA, or modelB" };
+    }
+    const baseUrl = this.settings.runtimeBaseUrl || DEFAULT_RUNTIME_BASE_URL;
+    const body = (model) => ({
+      model,
+      messages: [{ role: "user", content: prompt }],
+      max_tokens: 1024,
+      temperature: 0.7
+    });
+
+    const { fetchRuntimeJson } = require("../shared/runtime-client");
+    const [resultA, resultB] = await Promise.allSettled([
+      fetchRuntimeJson(baseUrl, "/chat/completions", body(modelA)),
+      fetchRuntimeJson(baseUrl, "/chat/completions", body(modelB))
+    ]);
+
+    const extract = (r) => {
+      if (r.status === "rejected") return { error: r.reason.message };
+      const choice = r.value && r.value.choices && r.value.choices[0];
+      return { content: choice && choice.message ? choice.message.content : "" };
+    };
+
+    return {
+      ok: true,
+      modelA: { name: modelA, ...extract(resultA) },
+      modelB: { name: modelB, ...extract(resultB) }
+    };
+  }
+
+  // ── Project file search ────────────────────────────
+
+  async searchProjectFiles({ query, projectId } = {}) {
+    if (!query) return { ok: false, results: [] };
+    const project = projectId
+      ? this.projects.find((p) => p.id === projectId)
+      : this.getActiveProject();
+    if (!project || !project.workspaceRoot) {
+      return { ok: false, error: "No project workspace" };
+    }
+    try {
+      const output = cp.execSync(
+        `grep -rl --include="*.{js,ts,py,json,md,html,css,cjs,mjs}" ${JSON.stringify(query)} . 2>/dev/null | head -20`,
+        { cwd: project.workspaceRoot, encoding: "utf-8", timeout: 10000 }
+      );
+      const files = output.trim().split("\n").filter(Boolean);
+      return { ok: true, results: files };
+    } catch {
+      return { ok: true, results: [] };
+    }
   }
 
   cleanup() {
@@ -115,6 +368,7 @@ class VSWirksController {
       this.abortController.abort();
       this.abortController = null;
     }
+    this.stopFileWatcher();
   }
 
   async initialize() {
@@ -126,6 +380,7 @@ class VSWirksController {
     const project = this.ensureProject();
     this.startBridgePolling();
     if (project) {
+      this.startFileWatcher(project);
       await this.refreshProjectIntelligence(project, false);
     }
     await this.persistState();
@@ -213,6 +468,24 @@ class VSWirksController {
         await this.refreshProjectIntelligence(this.getActiveProject(), false);
         this.postState();
         return true;
+      case "vswirks:exportConversation":
+        return this.exportConversation(payload || {});
+      case "vswirks:importConversation":
+        return this.importConversation();
+      case "vswirks:listOllamaModels":
+        return this.listOllamaModels();
+      case "vswirks:pullOllamaModel":
+        return this.pullOllamaModel(payload || {});
+      case "vswirks:deleteOllamaModel":
+        return this.deleteOllamaModel(payload || {});
+      case "vswirks:getGitStatus":
+        return this.getGitStatus(payload || {});
+      case "vswirks:runCommand":
+        return this.runCommand(payload || {});
+      case "vswirks:compareModels":
+        return this.compareModels(payload || {});
+      case "vswirks:searchProjectFiles":
+        return this.searchProjectFiles(payload || {});
       default:
         return null;
     }
@@ -727,6 +1000,7 @@ class VSWirksController {
     this.activeProjectId = projectId;
     const project = this.getActiveProject();
     this.lastStatus = "Project switched";
+    this.startFileWatcher(project);
     await this.refreshProjectIntelligence(project, false);
     await this.persistState();
     await this.publishEditorSelection(project);
@@ -2555,7 +2829,8 @@ class VSWirksController {
       pending: Boolean(this.abortController),
       promptRefining: this.promptRefining,
       statusText: this.lastStatus,
-      pendingApproval: this.pendingApproval
+      pendingApproval: this.pendingApproval,
+      recentFileChanges: this.recentFileChanges || []
     });
   }
 

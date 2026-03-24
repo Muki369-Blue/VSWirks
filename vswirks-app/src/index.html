@@ -54,9 +54,49 @@
             <span>Projects</span>
             <button id="studioNewProject" class="icon-btn" title="Open a folder to create or switch projects">📂</button>
           </div>
+          <div class="studio-search">
+            <input id="studioSearch" type="text" placeholder="Search files…" class="compact-input" />
+            <div id="studioSearchResults" class="studio-search-results"></div>
+          </div>
           <div id="studioProjectList" class="studio-project-list"></div>
+
+          <div class="studio-sidebar-section">
+            <div class="studio-sidebar-header">
+              <span>Git</span>
+              <button id="studioRefreshGit" class="icon-btn" title="Refresh git status">↻</button>
+            </div>
+            <div id="studioGitPanel" class="studio-git-panel">
+              <span class="meta">Select a project</span>
+            </div>
+          </div>
+
+          <div class="studio-sidebar-section">
+            <div class="studio-sidebar-header">
+              <span>File Changes</span>
+            </div>
+            <div id="studioFileChanges" class="studio-file-changes">
+              <span class="meta">Watching…</span>
+            </div>
+          </div>
+
+          <div class="studio-sidebar-section">
+            <div class="studio-sidebar-header">
+              <span>Models</span>
+              <button id="studioRefreshModels" class="icon-btn" title="Refresh model list">↻</button>
+            </div>
+            <div id="studioModelPanel" class="studio-model-panel"></div>
+            <div class="studio-model-pull">
+              <input id="studioModelName" type="text" placeholder="model:tag" class="compact-input" />
+              <button id="studioPullModel" class="ghost-button compact-button" title="Pull model from Ollama">Pull</button>
+            </div>
+          </div>
+
           <div class="studio-sidebar-footer">
             <button id="studioNewChat" class="ghost-button compact-button" title="Start a fresh Studio chat (no project context)">+ New Chat</button>
+            <div class="studio-footer-actions">
+              <button id="studioExport" class="ghost-button compact-button" title="Export this conversation to JSON">Export</button>
+              <button id="studioImport" class="ghost-button compact-button" title="Import a conversation from JSON">Import</button>
+            </div>
           </div>
         </aside>
         <div class="studio-main">
@@ -72,6 +112,11 @@
               <input id="studioQuickResponse" type="checkbox" checked /><span>Quick Response</span>
             </label>
           </div>
+          <div class="studio-templates">
+            <select id="studioTemplateSelect" title="Insert a prompt template">
+              <option value="">Templates…</option>
+            </select>
+          </div>
           <div class="studio-voice">
             <label>Voice</label>
             <select id="studioVoice" title="Select an English voice for reading responses aloud">
@@ -80,7 +125,50 @@
             <button id="studioVoiceTest" class="ghost-button compact-button" title="Test the selected voice">Test</button>
           </div>
         </div>
-        <section id="studioMessages" class="messages studio-messages"></section>
+        <div id="studioProjectContext" class="studio-project-context" style="display:none">
+          <span id="studioProjectLabel" class="studio-project-label"></span>
+          <button id="studioClearProject" class="ghost-button compact-button" title="Chat without project context">Clear</button>
+        </div>
+
+        <div class="studio-tabs">
+          <button id="studioTabChat" class="studio-tab active" data-panel="chat">Chat</button>
+          <button id="studioTabTerminal" class="studio-tab" data-panel="terminal">Terminal</button>
+          <button id="studioTabCompare" class="studio-tab" data-panel="compare">A/B Compare</button>
+        </div>
+
+        <!-- Chat panel -->
+        <section id="studioMessages" class="messages studio-messages studio-panel" data-panel="chat"></section>
+
+        <!-- Terminal panel -->
+        <section id="studioTerminal" class="studio-terminal studio-panel" data-panel="terminal" style="display:none">
+          <div id="studioTerminalOutput" class="terminal-output"></div>
+          <div class="terminal-input-row">
+            <span class="terminal-prompt">$</span>
+            <input id="studioTerminalInput" type="text" placeholder="Enter command…" class="terminal-input" />
+            <button id="studioTerminalRun" class="ghost-button compact-button">Run</button>
+          </div>
+        </section>
+
+        <!-- Model compare panel -->
+        <section id="studioCompare" class="studio-compare studio-panel" data-panel="compare" style="display:none">
+          <div class="compare-controls">
+            <select id="compareModelA" title="Model A"></select>
+            <span>vs</span>
+            <select id="compareModelB" title="Model B"></select>
+            <button id="compareRun" class="primary compact-button">Compare</button>
+          </div>
+          <div class="compare-results">
+            <div class="compare-col">
+              <div id="compareHeaderA" class="compare-header">Model A</div>
+              <div id="compareResultA" class="compare-output"></div>
+            </div>
+            <div class="compare-col">
+              <div id="compareHeaderB" class="compare-header">Model B</div>
+              <div id="compareResultB" class="compare-output"></div>
+            </div>
+          </div>
+        </section>
+
         <section class="studio-composer">
           <textarea id="studioPrompt" rows="3" placeholder="What are you working on?"></textarea>
           <div class="studio-send-row">
