@@ -75,6 +75,12 @@ app.on("window-all-closed", () => {
   }
 });
 
+app.on("before-quit", async () => {
+  if (controller) {
+    controller.cleanup();
+  }
+});
+
 function registerIpc() {
   for (const channel of IPC_CHANNELS) {
     ipcMain.handle(channel, async (_event, payload) => {

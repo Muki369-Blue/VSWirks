@@ -2,6 +2,12 @@
   const api = window.vswirks;
   const persisted = JSON.parse(localStorage.getItem("vswirks-ui") || "{}");
   const AUTO_MODEL_VALUE = "__auto__";
+
+  function escapeHtml(text) {
+    const div = document.createElement("div");
+    div.textContent = text;
+    return div.innerHTML;
+  }
   const SpeechRecognitionConstructor =
     window.SpeechRecognition || window.webkitSpeechRecognition || null;
 
@@ -956,7 +962,7 @@
     const header = document.createElement("div");
     header.className = "tool-header";
     const left = document.createElement("div");
-    left.innerHTML = `<strong>${item.toolName || "tool"}</strong><div class="meta">${item.summary || ""}</div>`;
+    left.innerHTML = `<strong>${escapeHtml(item.toolName || "tool")}</strong><div class="meta">${escapeHtml(item.summary || "")}</div>`;
     header.appendChild(left);
     if (item.path) {
       header.appendChild(
@@ -1187,7 +1193,7 @@
     elements.specPanel.innerHTML = "";
     const header = document.createElement("div");
     header.className = "drawer-header-row";
-    header.innerHTML = `<strong>${activeSpec.title}</strong><span class="meta">${formatRelativeTime(activeSpec.updatedAt)}</span>`;
+    header.innerHTML = `<strong>${escapeHtml(activeSpec.title)}</strong><span class="meta">${escapeHtml(formatRelativeTime(activeSpec.updatedAt))}</span>`;
     elements.specPanel.appendChild(header);
     const actions = document.createElement("div");
     actions.className = "inline-actions";
@@ -1247,7 +1253,7 @@
     elements.runPanel.innerHTML = "";
     const header = document.createElement("div");
     header.className = "drawer-header-row";
-    header.innerHTML = `<strong>${activeRun.summary || activeRun.workflowId || "Run"}</strong><span class="meta">${activeRun.status}</span>`;
+    header.innerHTML = `<strong>${escapeHtml(activeRun.summary || activeRun.workflowId || "Run")}</strong><span class="meta">${escapeHtml(activeRun.status)}</span>`;
     elements.runPanel.appendChild(header);
 
     const actionRow = document.createElement("div");
@@ -1283,7 +1289,7 @@
       node.className = `timeline-item ${event.type || "info"}`;
       const top = document.createElement("div");
       top.className = "timeline-top";
-      top.innerHTML = `<strong>${event.label}</strong><span class="meta">${formatRelativeTime(event.createdAt)}</span>`;
+      top.innerHTML = `<strong>${escapeHtml(event.label)}</strong><span class="meta">${escapeHtml(formatRelativeTime(event.createdAt))}</span>`;
       node.appendChild(top);
       if (event.detail) {
         const detail = document.createElement("div");
@@ -1315,7 +1321,7 @@
       activeRun.checkpoints.forEach((checkpoint) => {
         const item = document.createElement("div");
         item.className = "checkpoint-item";
-        item.innerHTML = `<span>${checkpoint.label}</span><span class="meta">${formatRelativeTime(checkpoint.createdAt)}</span>`;
+        item.innerHTML = `<span>${escapeHtml(checkpoint.label)}</span><span class="meta">${escapeHtml(formatRelativeTime(checkpoint.createdAt))}</span>`;
         item.appendChild(
           createTextButton("Fork", () =>
             api.invoke("vswirks:forkRunCheckpoint", {
@@ -1337,7 +1343,7 @@
       elements.runSummary.textContent = `Awaiting approval for ${state.pendingApproval.relativePath}`;
       const card = document.createElement("div");
       card.className = "approval-card";
-      card.innerHTML = `<strong>Pending proposal</strong><div class="meta">${state.pendingApproval.relativePath}</div>`;
+      card.innerHTML = `<strong>Pending proposal</strong><div class="meta">${escapeHtml(state.pendingApproval.relativePath)}</div>`;
       if (state.pendingApproval.rationale) {
         const rationale = document.createElement("div");
         rationale.className = "meta";
@@ -1388,7 +1394,7 @@
     diffEvents.slice(0, 8).forEach((event) => {
       const card = document.createElement("div");
       card.className = "diff-card";
-      card.innerHTML = `<strong>${event.label}</strong><div class="meta">${event.path || ""}</div>`;
+      card.innerHTML = `<strong>${escapeHtml(event.label)}</strong><div class="meta">${escapeHtml(event.path || "")}</div>`;
       const diff = document.createElement("pre");
       diff.className = "tool-detail diff-preview";
       diff.textContent = event.diff;
@@ -1423,7 +1429,7 @@
 
     const header = document.createElement("div");
     header.className = "drawer-header-row";
-    header.innerHTML = `<strong>${activeRun.validation.summary || "Validation pending"}</strong><span class="meta">${activeRun.validation.status}</span>`;
+    header.innerHTML = `<strong>${escapeHtml(activeRun.validation.summary || "Validation pending")}</strong><span class="meta">${escapeHtml(activeRun.validation.status)}</span>`;
     elements.validationPanel.appendChild(header);
 
     if (!(activeRun.validation.steps || []).length) {
@@ -1437,7 +1443,7 @@
     activeRun.validation.steps.forEach((step) => {
       const card = document.createElement("div");
       card.className = `validation-card ${step.status}`;
-      card.innerHTML = `<strong>${step.label}</strong><div class="meta">${step.command || ""}</div>`;
+      card.innerHTML = `<strong>${escapeHtml(step.label)}</strong><div class="meta">${escapeHtml(step.command || "")}</div>`;
       if (step.output) {
         const detail = document.createElement("pre");
         detail.className = "tool-detail";

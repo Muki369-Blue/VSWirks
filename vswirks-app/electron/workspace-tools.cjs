@@ -10,7 +10,21 @@ const {
   appendRipgrepIgnoreGlobs
 } = require("../../shared/workspace-filters");
 
-const CODE_EDITOR_BIN = "/Applications/VSCodium.app/Contents/Resources/app/bin/codium";
+const CODE_EDITOR_BIN = findEditorBin();
+
+function findEditorBin() {
+  const candidates = [
+    "/Applications/VSCodium.app/Contents/Resources/app/bin/codium",
+    "/Applications/Visual Studio Code.app/Contents/Resources/app/bin/code",
+    "/usr/local/bin/codium",
+    "/usr/local/bin/code"
+  ];
+  const { existsSync } = require("fs");
+  for (const bin of candidates) {
+    if (existsSync(bin)) return bin;
+  }
+  return candidates[0]; // fallback
+}
 
 function isPathWithin(rootPath, targetPath) {
   const relative = path.relative(rootPath, targetPath);
@@ -166,6 +180,10 @@ async function writeWorkspaceFile({ workspaceRoot, relativePath, content }) {
     await fs.copyFile(target, backupPath);
   }
   await fs.writeFile(target, content, "utf8");
+  // Prune old backups — keep only last 3
+  if (backupPath) {
+    pruneBackups(target, 3).catch(() => {});
+  }
   return {
     path: relativePath,
     backupPath: backupPath ? path.relative(workspaceRoot, backupPath) : null,
@@ -760,6 +778,20 @@ function execFileTextAllowExitCode(command, args, allowedExitCodes, options = {}
       }
     );
   });
+}
+
+async function pruneBackups(filePath, keep) {
+  const dir = path.dirname(filePath);
+  const base = path.basename(filePath);
+  const entries = await fs.readdir(dir).catch(() => []);
+  const backups = entries
+    .filter((entry) => entry.startsWith(base + ".bak."))
+    .sort()
+    .reverse();
+  const toDelete = backups.slice(keep);
+  for (const entry of toDelete) {
+    await fs.unlink(path.join(dir, entry)).catch(() => {});
+  }
 }
 
 module.exports = {

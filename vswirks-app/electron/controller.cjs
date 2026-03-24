@@ -106,6 +106,17 @@ class VSWirksController {
     this.bridgePollHandle = undefined;
   }
 
+  cleanup() {
+    if (this.bridgePollHandle) {
+      clearInterval(this.bridgePollHandle);
+      this.bridgePollHandle = undefined;
+    }
+    if (this.abortController) {
+      this.abortController.abort();
+      this.abortController = null;
+    }
+  }
+
   async initialize() {
     await ensureVSWirksDirs();
     await this.loadSettings();
@@ -2085,7 +2096,7 @@ class VSWirksController {
             }
           : item
       );
-      run.status = decision === "deny" ? "running" : "running";
+      run.status = decision === "deny" ? "denied_resuming" : "running";
       this.recordRunCheckpoint(project, run, createRunCheckpoint({
         runId: run.id,
         label: `${decision === "deny" ? "Denied" : "Approved"} ${this.pendingApproval.relativePath}`,

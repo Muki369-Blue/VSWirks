@@ -235,7 +235,12 @@ async function streamRuntimeChat(baseUrl, body, signal, handlers = {}) {
 
 async function probeRuntimeHealth(baseUrl) {
   try {
-    const response = await fetch(`${getRuntimeServiceUrl(baseUrl)}/health`);
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 5000);
+    const response = await fetch(`${getRuntimeServiceUrl(baseUrl)}/health`, {
+      signal: controller.signal
+    });
+    clearTimeout(timeout);
     if (!response.ok) {
       throw new Error(`${response.status} ${response.statusText}`);
     }
