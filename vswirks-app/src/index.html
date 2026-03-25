@@ -24,6 +24,7 @@
         <nav class="view-switcher">
           <button id="viewStudio" class="view-tab active" title="Studio — local-first AI chat companion">Studio</button>
           <button id="viewProjects" class="view-tab" title="Projects — scaffold, build, and manage repos">Projects</button>
+          <button id="viewModelLab" class="view-tab" title="Model Lab — abliterate, evaluate, and export local models">Model Lab</button>
         </nav>
         <div class="topbar-controls">
           <select id="mode" title="Chat is read-only conversation. Agent writes files and acts in your workspace.">
@@ -197,6 +198,97 @@
             <button id="studioSend" class="primary" title="Send message">Send</button>
           </div>
         </section>
+        </div>
+      </div>
+
+      <div id="modelLabView" class="model-lab-view" style="display:none">
+        <aside class="lab-sidebar">
+          <div class="lab-sidebar-header">
+            <span>Local Models</span>
+            <button id="labRefreshModels" class="icon-btn" title="Refresh model list">↻</button>
+          </div>
+          <div id="labModelList" class="lab-model-list"></div>
+          <div class="lab-sidebar-section">
+            <div class="lab-sidebar-header"><span>Abliterated</span></div>
+            <div id="labAbliteratedList" class="lab-model-list"></div>
+          </div>
+          <div class="lab-sidebar-section">
+            <div class="lab-sidebar-header"><span>Saved Configs</span></div>
+            <div id="labConfigList" class="lab-config-list"></div>
+          </div>
+        </aside>
+        <div class="lab-main">
+          <div class="lab-tabs">
+            <button class="lab-tab active" data-labpanel="abliterate">Abliterate</button>
+            <button class="lab-tab" data-labpanel="evaluate">Evaluate</button>
+            <button class="lab-tab" data-labpanel="export">Export GGUF</button>
+            <button class="lab-tab" data-labpanel="import">Import to Ollama</button>
+          </div>
+
+          <section id="labAbliterate" class="lab-panel active" data-labpanel="abliterate">
+            <h3>Abliterate Model</h3>
+            <p class="meta">Remove refusal behavior using orthogonal projection. Preserves model capabilities while reducing guardrail triggers.</p>
+            <div class="lab-form">
+              <label><span>Model Path</span><input id="labModelPath" type="text" placeholder="/path/to/model or HuggingFace ID" class="lab-input" /></label>
+              <label><span>Direction Multiplier</span><input id="labDirMultiplier" type="number" value="1.0" min="0.1" max="3.0" step="0.1" class="lab-input" /></label>
+              <label><span>Num Prompts</span><input id="labNumPrompts" type="number" value="30" min="10" max="200" step="5" class="lab-input" /></label>
+              <div class="lab-checkboxes">
+                <label class="lab-check"><input id="labNullSpace" type="checkbox" /><span>Null-Space Constraints (AlphaEdit)</span></label>
+                <label class="lab-check"><input id="labWinsorize" type="checkbox" checked /><span>Winsorization</span></label>
+                <label class="lab-check"><input id="labAdaptive" type="checkbox" checked /><span>Adaptive Layer Weighting</span></label>
+              </div>
+              <div class="lab-actions">
+                <input id="labConfigName" type="text" placeholder="Config name…" class="lab-input lab-input-sm" />
+                <button id="labSaveConfig" class="ghost-button compact-button">Save Config</button>
+                <button id="labStartAbliterate" class="primary">Start Abliteration</button>
+                <button id="labCancelAbliterate" class="danger compact-button" style="display:none">Cancel</button>
+              </div>
+            </div>
+            <div id="labAbliterateProgress" class="lab-progress">
+              <div id="labProgressBar" class="lab-progress-bar"><div id="labProgressFill" class="lab-progress-fill"></div></div>
+              <div id="labProgressLog" class="lab-progress-log"></div>
+            </div>
+          </section>
+
+          <section id="labEvaluate" class="lab-panel" data-labpanel="evaluate" style="display:none">
+            <h3>Evaluate Refusal</h3>
+            <p class="meta">Test a model's refusal rate before and after abliteration.</p>
+            <div class="lab-form">
+              <label><span>Model Path</span><input id="labEvalModelPath" type="text" placeholder="/path/to/model" class="lab-input" /></label>
+              <button id="labRunEval" class="primary">Run Evaluation</button>
+            </div>
+            <div id="labEvalResults" class="lab-eval-results"></div>
+          </section>
+
+          <section id="labExport" class="lab-panel" data-labpanel="export" style="display:none">
+            <h3>Export to GGUF</h3>
+            <p class="meta">Convert an abliterated model to GGUF format for use with Ollama or llama.cpp.</p>
+            <div class="lab-form">
+              <label><span>Model Path</span><input id="labExportModelPath" type="text" placeholder="/path/to/abliterated-model" class="lab-input" /></label>
+              <label><span>Quantization</span>
+                <select id="labQuantType" class="lab-input">
+                  <option value="Q4_K_M">Q4_K_M (balanced)</option>
+                  <option value="Q5_K_M">Q5_K_M (higher quality)</option>
+                  <option value="Q6_K">Q6_K (near lossless)</option>
+                  <option value="Q8_0">Q8_0 (large, precise)</option>
+                  <option value="Q2_K">Q2_K (smallest, lossy)</option>
+                </select>
+              </label>
+              <button id="labRunExport" class="primary">Export</button>
+            </div>
+            <div id="labExportResults" class="lab-export-results"></div>
+          </section>
+
+          <section id="labImport" class="lab-panel" data-labpanel="import" style="display:none">
+            <h3>Import to Ollama</h3>
+            <p class="meta">Create an Ollama model from a GGUF file.</p>
+            <div class="lab-form">
+              <label><span>GGUF File Path</span><input id="labGgufPath" type="text" placeholder="/path/to/model.gguf" class="lab-input" /></label>
+              <label><span>Ollama Model Name</span><input id="labOllamaName" type="text" placeholder="my-model:latest" class="lab-input" /></label>
+              <button id="labRunImport" class="primary">Import</button>
+            </div>
+            <div id="labImportResults" class="lab-import-results"></div>
+          </section>
         </div>
       </div>
 

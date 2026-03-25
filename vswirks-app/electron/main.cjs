@@ -30,7 +30,7 @@ ensureKokoroVoicesLink();
 
 let mainWindow = null;
 let controller = null;
-const APP_ICON_PATH = path.join(__dirname, "..", "src", "assets", "vswirks-dock.png");
+const APP_ICON_PATH = path.join(__dirname, "assets", "vswirks-icon.png");
 
 app.setName("VSWirks App");
 

@@ -1,6 +1,7 @@
 (function () {
   const api = window.vswirks;
-  const persisted = JSON.parse(localStorage.getItem("vswirks-ui") || "{}");
+  let persisted = {};
+  try { persisted = JSON.parse(localStorage.getItem("vswirks-ui") || "{}"); } catch { persisted = {}; }
   const AUTO_MODEL_VALUE = "__auto__";
 
   function escapeHtml(text) {
@@ -162,6 +163,7 @@
     app: document.getElementById("app"),
     viewStudio: document.getElementById("viewStudio"),
     viewProjects: document.getElementById("viewProjects"),
+    viewModelLab: document.getElementById("viewModelLab"),
     studioView: document.getElementById("studioView"),
     studioMessages: document.getElementById("studioMessages"),
     studioPrompt: document.getElementById("studioPrompt"),
@@ -452,6 +454,19 @@
       updateProgress(payload.message);
       renderStatus();
     }
+    if (payload && payload.type === "abliterate-progress") {
+      const log = document.getElementById("labProgressLog");
+      if (log) {
+        log.textContent += payload.label + "\n";
+        log.scrollTop = log.scrollHeight;
+        const match = payload.label.match(/(\d+)\/(\d+)/);
+        if (match) {
+          const pct = Math.round((parseInt(match[1]) / parseInt(match[2])) * 100);
+          const fill = document.getElementById("labProgressFill");
+          if (fill) fill.style.width = pct + "%";
+        }
+      }
+    }
   });
 
   function startProgress() {
@@ -514,11 +529,17 @@
     activeView = view;
     elements.app.classList.toggle("view-studio", view === "studio");
     elements.app.classList.toggle("view-projects", view === "projects");
+    elements.app.classList.toggle("view-modellab", view === "modellab");
     elements.viewStudio.classList.toggle("active", view === "studio");
     elements.viewProjects.classList.toggle("active", view === "projects");
+    elements.viewModelLab.classList.toggle("active", view === "modellab");
+    const modelLabView = document.getElementById("modelLabView");
+    if (modelLabView) modelLabView.style.display = view === "modellab" ? "" : "none";
     if (view === "studio") {
       renderStudioMessages();
       requestAnimationFrame(() => elements.studioPrompt.focus());
+    } else if (view === "modellab") {
+      refreshLabModels(); refreshLabAbliterated(); refreshLabConfigs();
     } else {
       navigateToProjectLatest();
     }
@@ -2095,15 +2116,17 @@
   }
 
   function rememberUi() {
-    localStorage.setItem(
-      "vswirks-ui",
-      JSON.stringify({
-        mode: elements.mode.value,
-        executionMode: elements.executionMode.value === "1" ? "act" : "plan",
-        focusChat: elements.app.classList.contains("focus-chat"),
-        drawerTab
-      })
-    );
+    try {
+      localStorage.setItem(
+        "vswirks-ui",
+        JSON.stringify({
+          mode: elements.mode.value,
+          executionMode: elements.executionMode.value === "1" ? "act" : "plan",
+          focusChat: elements.app.classList.contains("focus-chat"),
+          drawerTab
+        })
+      );
+    } catch {}
   }
 
   function sendPrompt() {
@@ -2658,6 +2681,7 @@
   // ── Studio listeners ──
   elements.viewStudio.addEventListener("click", () => switchView("studio"));
   elements.viewProjects.addEventListener("click", () => switchView("projects"));
+  elements.viewModelLab.addEventListener("click", () => switchView("modellab"));
   elements.studioSend.addEventListener("click", studioSendPrompt);
   elements.studioPrompt.addEventListener("keydown", (e) => {
     if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); studioSendPrompt(); }
@@ -2764,7 +2788,7 @@
   elements.studioAutoContext.addEventListener("change", () => {
     autoContextEnabled = elements.studioAutoContext.checked;
     persisted.autoContext = autoContextEnabled;
-    localStorage.setItem("vswirks-ui", JSON.stringify(persisted));
+    try { localStorage.setItem("vswirks-ui", JSON.stringify(persisted)); } catch {}
   });
 
   // Image generation
@@ -3035,5 +3059,223 @@
   applyPromptPlaceholder();
   renderTabs();
   renderVibe();
+  // ── Model Lab ─────────────────────────────────────
+  let labModels = [];
+  let labAbliterated = [];
+  let labConfigs = [];
+  let labSelectedModel = null;
+
+  async function refreshLabModels() {
+    const result = await api.invoke("vswirks:listLocalModels");
+    if (result && result.ok) {
+      labModels = result.models || [];
+      renderLabModels();
+    }
+  }
+
+  async function refreshLabAbliterated() {
+    const result = await api.invoke("vswirks:listAbliteratedModels");
+    if (result && result.ok) {
+      labAbliterated = result.models || [];
+      renderLabAbliterated();
+    }
+  }
+
+  async function refreshLabConfigs() {
+    const result = await api.invoke("vswirks:getAbliterateConfigs");
+    if (result && result.ok) {
+      labConfigs = result.configs || [];
+      renderLabConfigs();
+    }
+  }
+
+  function renderLabModels() {
+    const container = document.getElementById("labModelList");
+    if (!container) return;
+    container.innerHTML = labModels.map(m => {
+      const selected = labSelectedModel === m.name ? " active" : "";
+      const sourceClass = m.source || "";
+      return `<div class="lab-model-item${selected}" data-model="${escapeHtml(m.name)}" data-path="${escapeHtml(m.path || m.name)}">
+        <span>${escapeHtml(m.name)}</span>
+        <span class="lab-source ${sourceClass}">${escapeHtml(m.source || "")}</span>
+      </div>`;
+    }).join("");
+    container.querySelectorAll(".lab-model-item").forEach(el => {
+      el.addEventListener("click", () => {
+        labSelectedModel = el.dataset.model;
+        const modelPath = el.dataset.path;
+        document.getElementById("labModelPath").value = modelPath;
+        document.getElementById("labEvalModelPath").value = modelPath;
+        document.getElementById("labExportModelPath").value = modelPath;
+        renderLabModels();
+      });
+    });
+  }
+
+  function renderLabAbliterated() {
+    const container = document.getElementById("labAbliteratedList");
+    if (!container) return;
+    container.innerHTML = labAbliterated.map(m =>
+      `<div class="lab-model-item" data-path="${escapeHtml(m.path)}">
+        <span>${escapeHtml(m.name)}</span>
+        <span class="lab-source abliterated">abliterated</span>
+      </div>`
+    ).join("");
+    container.querySelectorAll(".lab-model-item").forEach(el => {
+      el.addEventListener("click", () => {
+        const p = el.dataset.path;
+        document.getElementById("labModelPath").value = p;
+        document.getElementById("labEvalModelPath").value = p;
+        document.getElementById("labExportModelPath").value = p;
+      });
+    });
+  }
+
+  function renderLabConfigs() {
+    const container = document.getElementById("labConfigList");
+    if (!container) return;
+    container.innerHTML = labConfigs.map(c =>
+      `<div class="lab-config-item" data-config="${escapeHtml(c.name)}">${escapeHtml(c.name)}</div>`
+    ).join("");
+    container.querySelectorAll(".lab-config-item").forEach(el => {
+      el.addEventListener("click", () => {
+        const config = labConfigs.find(c => c.name === el.dataset.config);
+        if (config) {
+          if (config.model_path) document.getElementById("labModelPath").value = config.model_path;
+          if (config.direction_multiplier) document.getElementById("labDirMultiplier").value = config.direction_multiplier;
+          if (config.num_prompts) document.getElementById("labNumPrompts").value = config.num_prompts;
+          document.getElementById("labNullSpace").checked = !!config.use_null_space;
+          document.getElementById("labWinsorize").checked = config.use_winsorization !== false;
+          document.getElementById("labAdaptive").checked = config.adaptive_layer_weighting !== false;
+        }
+      });
+    });
+  }
+
+  // Lab tab switching
+  document.querySelectorAll(".lab-tab").forEach(tab => {
+    tab.addEventListener("click", () => {
+      document.querySelectorAll(".lab-tab").forEach(t => t.classList.remove("active"));
+      document.querySelectorAll(".lab-panel").forEach(p => { p.classList.remove("active"); p.style.display = "none"; });
+      tab.classList.add("active");
+      const panel = document.querySelector(`.lab-panel[data-labpanel="${tab.dataset.labpanel}"]`);
+      if (panel) { panel.classList.add("active"); panel.style.display = "block"; }
+    });
+  });
+
+  // Refresh button
+  const labRefreshBtn = document.getElementById("labRefreshModels");
+  if (labRefreshBtn) labRefreshBtn.addEventListener("click", () => { refreshLabModels(); refreshLabAbliterated(); refreshLabConfigs(); });
+
+  // Save config
+  const labSaveConfigBtn = document.getElementById("labSaveConfig");
+  if (labSaveConfigBtn) labSaveConfigBtn.addEventListener("click", async () => {
+    const name = document.getElementById("labConfigName").value.trim();
+    if (!name) return;
+    const config = {
+      model_path: document.getElementById("labModelPath").value,
+      direction_multiplier: parseFloat(document.getElementById("labDirMultiplier").value) || 1.0,
+      num_prompts: parseInt(document.getElementById("labNumPrompts").value) || 30,
+      use_null_space: document.getElementById("labNullSpace").checked,
+      use_winsorization: document.getElementById("labWinsorize").checked,
+      adaptive_layer_weighting: document.getElementById("labAdaptive").checked
+    };
+    await api.invoke("vswirks:saveAbliterateConfig", { name, config });
+    refreshLabConfigs();
+  });
+
+  // Start abliteration
+  const labStartBtn = document.getElementById("labStartAbliterate");
+  const labCancelBtn = document.getElementById("labCancelAbliterate");
+  if (labStartBtn) labStartBtn.addEventListener("click", async () => {
+    const modelPath = document.getElementById("labModelPath").value.trim();
+    if (!modelPath) return;
+    labStartBtn.style.display = "none";
+    labCancelBtn.style.display = "";
+    document.getElementById("labProgressLog").textContent = "Starting abliteration…\n";
+    document.getElementById("labProgressFill").style.width = "5%";
+
+    const config = {
+      directionMultiplier: parseFloat(document.getElementById("labDirMultiplier").value) || 1.0,
+      numPrompts: parseInt(document.getElementById("labNumPrompts").value) || 30,
+      useNullSpace: document.getElementById("labNullSpace").checked,
+      useWinsorization: document.getElementById("labWinsorize").checked,
+      adaptiveLayerWeighting: document.getElementById("labAdaptive").checked
+    };
+
+    const result = await api.invoke("vswirks:abliterateModel", { modelPath, config });
+    labStartBtn.style.display = "";
+    labCancelBtn.style.display = "none";
+    const log = document.getElementById("labProgressLog");
+    if (result && result.ok) {
+      log.textContent += "\n✅ Abliteration complete!\nOutput: " + result.outputPath + "\n";
+      document.getElementById("labProgressFill").style.width = "100%";
+      refreshLabAbliterated();
+    } else {
+      log.textContent += "\n❌ Failed: " + (result ? result.error : "Unknown error") + "\n";
+      document.getElementById("labProgressFill").style.width = "0%";
+    }
+  });
+
+  if (labCancelBtn) labCancelBtn.addEventListener("click", () => {
+    api.invoke("vswirks:abliterateCancel");
+    labCancelBtn.style.display = "none";
+    labStartBtn.style.display = "";
+    document.getElementById("labProgressLog").textContent += "\n⚠️ Cancelled by user\n";
+  });
+
+  // Evaluate refusal
+  const labRunEvalBtn = document.getElementById("labRunEval");
+  if (labRunEvalBtn) labRunEvalBtn.addEventListener("click", async () => {
+    const modelPath = document.getElementById("labEvalModelPath").value.trim();
+    if (!modelPath) return;
+    const resultsEl = document.getElementById("labEvalResults");
+    resultsEl.innerHTML = '<span class="meta">Running evaluation…</span>';
+    const result = await api.invoke("vswirks:evaluateRefusal", { modelPath });
+    if (result && result.ok) {
+      const rate = result.harmful_refusal_rate || result.refusal_rate || 0;
+      const rateClass = rate > 0.7 ? "good" : rate > 0.3 ? "warn" : "bad";
+      resultsEl.innerHTML = `
+        <div class="lab-eval-stat"><span class="lab-eval-label">Harmful Refusal Rate</span><span class="lab-eval-value ${rateClass}">${(rate * 100).toFixed(1)}%</span></div>
+        <div class="lab-eval-stat"><span class="lab-eval-label">Harmless Refusal Rate</span><span class="lab-eval-value">${((result.harmless_refusal_rate || 0) * 100).toFixed(1)}%</span></div>
+        <div class="lab-eval-stat"><span class="lab-eval-label">Total Tested</span><span class="lab-eval-value">${result.total_tested || "N/A"}</span></div>
+      `;
+    } else {
+      resultsEl.innerHTML = `<span class="meta" style="color:var(--bad)">Evaluation failed: ${escapeHtml(result ? result.error : "Unknown")}</span>`;
+    }
+  });
+
+  // Export GGUF
+  const labRunExportBtn = document.getElementById("labRunExport");
+  if (labRunExportBtn) labRunExportBtn.addEventListener("click", async () => {
+    const modelPath = document.getElementById("labExportModelPath").value.trim();
+    const quantType = document.getElementById("labQuantType").value;
+    if (!modelPath) return;
+    const resultsEl = document.getElementById("labExportResults");
+    resultsEl.innerHTML = '<span class="meta">Exporting to GGUF…</span>';
+    const result = await api.invoke("vswirks:exportToGguf", { modelPath, quantType });
+    if (result && result.ok) {
+      resultsEl.innerHTML = `<span style="color:var(--good)">✅ Export complete</span><br><span class="meta">${escapeHtml(result.output || "")}</span>`;
+    } else {
+      resultsEl.innerHTML = `<span style="color:var(--bad)">❌ Export failed: ${escapeHtml(result ? result.error : "Unknown")}</span>`;
+    }
+  });
+
+  // Import to Ollama
+  const labRunImportBtn = document.getElementById("labRunImport");
+  if (labRunImportBtn) labRunImportBtn.addEventListener("click", async () => {
+    const ggufPath = document.getElementById("labGgufPath").value.trim();
+    const modelName = document.getElementById("labOllamaName").value.trim();
+    if (!ggufPath || !modelName) return;
+    const resultsEl = document.getElementById("labImportResults");
+    resultsEl.innerHTML = '<span class="meta">Importing to Ollama…</span>';
+    const result = await api.invoke("vswirks:importToOllama", { ggufPath, modelName });
+    if (result && result.ok) {
+      resultsEl.innerHTML = `<span style="color:var(--good)">✅ Model "${escapeHtml(modelName)}" imported to Ollama</span>`;
+    } else {
+      resultsEl.innerHTML = `<span style="color:var(--bad)">❌ Import failed: ${escapeHtml(result ? result.error : "Unknown")}</span>`;
+    }
+  });
+
   void api.invoke("vswirks:ready");
 })();

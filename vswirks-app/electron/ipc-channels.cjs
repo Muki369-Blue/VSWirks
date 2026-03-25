@@ -55,7 +55,17 @@ const IPC_CHANNELS = Object.freeze([
   "vswirks:indexProject",
   "vswirks:ragSearch",
   "vswirks:generateImage",
-  "vswirks:synthesizeSpeech"
+  "vswirks:synthesizeSpeech",
+  "vswirks:listLocalModels",
+  "vswirks:abliterateModel",
+  "vswirks:abliterateProgress",
+  "vswirks:abliterateCancel",
+  "vswirks:listAbliteratedModels",
+  "vswirks:evaluateRefusal",
+  "vswirks:exportToGguf",
+  "vswirks:importToOllama",
+  "vswirks:getAbliterateConfigs",
+  "vswirks:saveAbliterateConfig"
 ]);
 
 module.exports = {

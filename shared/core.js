@@ -1,3 +1,4 @@
+const os = require("os");
 const path = require("path");
 
 const APP_STATE_VERSION = 3;
@@ -12,8 +13,20 @@ const MAX_API_MESSAGES = 120;
 const DEFAULT_MODEL = "qwen2.5-coder:14b-instruct";
 const DEFAULT_EXECUTION_MODE = "plan";
 const DEFAULT_RUNTIME_BASE_URL = "http://127.0.0.1:7471/v1";
-const DEFAULT_RUNTIME_CWD = "/Users/bluewirks.max/dev/ai-runtime";
-const DEFAULT_RUNTIME_PYTHON = "/Users/bluewirks.max/dev/ai-app/.venv/bin/python";
+const DEFAULT_RUNTIME_CWD = path.join(os.homedir(), "dev", "ai-runtime");
+const DEFAULT_RUNTIME_PYTHON = (() => {
+  const candidates = [
+    path.join(os.homedir(), "dev", "ai-app", ".venv", "bin", "python"),
+    path.join(os.homedir(), ".venv", "bin", "python"),
+    "/usr/local/bin/python3",
+    "/usr/bin/python3"
+  ];
+  const _fs = require("fs");
+  for (const c of candidates) {
+    try { if (_fs.existsSync(c)) return c; } catch {}
+  }
+  return "python3";
+})();
 const WORKSPACE_INSTRUCTIONS_PATH = path.join(".github", "copilot-instructions.md");
 const DEFAULT_SYSTEM_PROMPT =
   "You are a local-first coding assistant. Be concise, practical, and safe. " +

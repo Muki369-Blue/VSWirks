@@ -37,7 +37,10 @@ async function readJson(filePath, fallbackValue) {
 
 async function writeJson(filePath, value) {
   await ensureVSWirksDirs();
-  await fs.writeFile(filePath, JSON.stringify(value, null, 2), "utf8");
+  const data = JSON.stringify(value, null, 2);
+  const tmpPath = filePath + ".tmp." + Date.now();
+  await fs.writeFile(tmpPath, data, "utf-8");
+  await fs.rename(tmpPath, filePath);
 }
 
 async function readBridgeState() {

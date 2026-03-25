@@ -191,45 +191,61 @@ async function streamRuntimeChat(baseUrl, body, signal, handlers = {}) {
   const decoder = new TextDecoder("utf-8");
   let buffer = "";
 
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) {
-      break;
-    }
+  let inactivityTimer = null;
+  const abortController = signal ? null : new AbortController();
+  const resetInactivity = () => {
+    if (inactivityTimer) clearTimeout(inactivityTimer);
+    inactivityTimer = setTimeout(() => {
+      if (abortController) abortController.abort();
+      reader.cancel().catch(() => {});
+    }, 60000);
+  };
+  resetInactivity();
 
-    buffer += decoder.decode(value, { stream: true });
-    const events = buffer.split("\n\n");
-    buffer = events.pop() || "";
-
-    for (const event of events) {
-      const line = event
-        .split(/\r?\n/)
-        .find((entry) => entry.startsWith("data: "));
-      if (!line) {
-        continue;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) {
+        break;
       }
-      const payload = line.slice(6).trim();
-      if (payload === "[DONE]") {
-        if (handlers.onDone) {
-          handlers.onDone();
+
+      resetInactivity();
+      buffer += decoder.decode(value, { stream: true });
+      const events = buffer.split("\n\n");
+      buffer = events.pop() || "";
+
+      for (const event of events) {
+        const line = event
+          .split(/\r?\n/)
+          .find((entry) => entry.startsWith("data: "));
+        if (!line) {
+          continue;
         }
-        return;
-      }
+        const payload = line.slice(6).trim();
+        if (payload === "[DONE]") {
+          if (handlers.onDone) {
+            handlers.onDone();
+          }
+          return;
+        }
 
-      const json = safeJsonParse(payload, {});
-      if (json.usage && handlers.onUsage) {
-        handlers.onUsage(json.usage);
-      }
+        const json = safeJsonParse(payload, {});
+        if (json.usage && handlers.onUsage) {
+          handlers.onUsage(json.usage);
+        }
 
-      const choice = json.choices && json.choices[0];
-      if (!choice || !choice.delta) {
-        continue;
-      }
+        const choice = json.choices && json.choices[0];
+        if (!choice || !choice.delta) {
+          continue;
+        }
 
-      if (choice.delta.content && handlers.onText) {
-        handlers.onText(choice.delta.content);
+        if (choice.delta.content && handlers.onText) {
+          handlers.onText(choice.delta.content);
+        }
       }
     }
+  } finally {
+    if (inactivityTimer) clearTimeout(inactivityTimer);
   }
 }
 
