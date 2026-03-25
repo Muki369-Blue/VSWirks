@@ -1004,16 +1004,53 @@
     elements.studioPrompt.value = "";
   }
 
-  // ── Voice synthesis ────────────────────────────────
+  // ── Voice synthesis (human personas) ────────────────
+
+  // 6 curated voice personas — 4 female, 2 male, diverse backgrounds
+  // Each maps a human name to preferred macOS system voice names (in priority order)
+  const VOICE_PERSONAS = [
+    { name: "Zola",    desc: "Warm, confident (Female)",   gender: "F", prefer: ["Tessa", "Fiona", "Samantha", "Karen"] },
+    { name: "Mei",     desc: "Clear, precise (Female)",    gender: "F", prefer: ["Karen", "Samantha", "Serena", "Tessa"] },
+    { name: "Claire",  desc: "Friendly, expressive (Female)", gender: "F", prefer: ["Samantha", "Serena", "Victoria", "Fiona"] },
+    { name: "Priya",   desc: "Articulate, composed (Female)", gender: "F", prefer: ["Veena", "Isha", "Samantha", "Moira"] },
+    { name: "Marcus",  desc: "Deep, steady (Male)",        gender: "M", prefer: ["Daniel", "Alex", "Tom", "Oliver"] },
+    { name: "James",   desc: "Energetic, clear (Male)",    gender: "M", prefer: ["Alex", "Tom", "Daniel", "Oliver"] }
+  ];
+
+  let resolvedVoiceMap = {}; // persona name → voiceURI
 
   function populateStudioVoices() {
-    const all = speechSynthesis.getVoices().filter((v) => v.lang.startsWith("en"));
-    const picked = all.slice(0, 6);
+    const allVoices = speechSynthesis.getVoices().filter((v) => v.lang.startsWith("en"));
+    if (!allVoices.length) return;
+
+    resolvedVoiceMap = {};
     elements.studioVoice.innerHTML = '<option value="">Off</option>';
-    picked.forEach((v) => {
+
+    VOICE_PERSONAS.forEach((persona) => {
+      // Find the best available system voice matching this persona
+      let matched = null;
+      for (const pref of persona.prefer) {
+        matched = allVoices.find((v) => v.name.includes(pref));
+        if (matched) break;
+      }
+      // Fallback: pick any voice roughly matching gender
+      if (!matched) {
+        // Female voices tend to have higher pitch on macOS; male voices tend to be named Daniel/Alex/Tom etc.
+        const genderHints = persona.gender === "M"
+          ? ["Daniel", "Alex", "Tom", "Oliver", "Rishi", "Aaron", "Ralph"]
+          : ["Samantha", "Karen", "Tessa", "Fiona", "Veena", "Moira", "Victoria", "Serena"];
+        for (const hint of genderHints) {
+          matched = allVoices.find((v) => v.name.includes(hint));
+          if (matched) break;
+        }
+      }
+      if (!matched) matched = allVoices[0];
+      if (!matched) return;
+
+      resolvedVoiceMap[persona.name] = matched.voiceURI;
       const opt = document.createElement("option");
-      opt.value = v.voiceURI;
-      opt.textContent = v.name.replace(/\s*\(.*\)/, "").trim();
+      opt.value = persona.name;
+      opt.textContent = `${persona.name} — ${persona.desc}`;
       elements.studioVoice.appendChild(opt);
     });
   }
@@ -1021,11 +1058,34 @@
   function speakText(text) {
     if (!studioVoiceId || !text) return;
     speechSynthesis.cancel();
-    const utterance = new SpeechSynthesisUtterance(text.slice(0, 2000));
-    const voice = speechSynthesis.getVoices().find((v) => v.voiceURI === studioVoiceId);
-    if (voice) utterance.voice = voice;
-    utterance.rate = 1.05;
-    speechSynthesis.speak(utterance);
+
+    const voiceURI = resolvedVoiceMap[studioVoiceId];
+    const voice = voiceURI
+      ? speechSynthesis.getVoices().find((v) => v.voiceURI === voiceURI)
+      : null;
+
+    // Split long text into natural sentences for more human cadence
+    const sentences = text.slice(0, 3000).match(/[^.!?\n]+[.!?\n]*/g) || [text.slice(0, 3000)];
+
+    sentences.forEach((sentence, i) => {
+      const trimmed = sentence.trim();
+      if (!trimmed) return;
+      const utterance = new SpeechSynthesisUtterance(trimmed);
+      if (voice) utterance.voice = voice;
+
+      // Human-like pacing: vary rate and pitch slightly per sentence
+      utterance.rate = 0.95 + Math.random() * 0.12;   // 0.95–1.07
+      utterance.pitch = 0.97 + Math.random() * 0.06;   // 0.97–1.03
+
+      // Slight pause between sentences for natural breathing
+      if (i > 0) {
+        const pause = new SpeechSynthesisUtterance(" ");
+        if (voice) pause.voice = voice;
+        pause.rate = 0.5;
+        speechSynthesis.speak(pause);
+      }
+      speechSynthesis.speak(utterance);
+    });
   }
 
   if (typeof speechSynthesis !== "undefined") {
