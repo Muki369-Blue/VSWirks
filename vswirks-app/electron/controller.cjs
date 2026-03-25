@@ -60,6 +60,7 @@ const {
 } = require("./workspace-tools.cjs");
 const { isImagePath, createImageAttachment } = require("./image-tools.cjs");
 const { runConversation, buildWorkspaceSystemPrompt } = require("./runner.cjs");
+const { synthesize: ttssynthesize } = require("./tts-engine.cjs");
 
 const AUTO_MODEL_VALUE = "__auto__";
 const LEGACY_CODER_MODEL = "mlx/Qwen3.5-27B-Claude-4.6-Opus-Distilled-MLX-6bit";
@@ -621,6 +622,18 @@ class VSWirksController {
     }
   }
 
+  // ── Text-to-Speech (Kokoro TTS) ───────────────────
+
+  async synthesizeSpeech({ text, voice } = {}) {
+    if (!text) return { ok: false, error: "No text provided" };
+    try {
+      const result = await ttssynthesize(text, voice || "af_heart");
+      return { ok: true, samples: result.samples, sampleRate: result.sampleRate };
+    } catch (error) {
+      return { ok: false, error: `TTS failed: ${error.message}` };
+    }
+  }
+
   cleanup() {
     if (this.bridgePollHandle) {
       clearInterval(this.bridgePollHandle);
@@ -766,6 +779,8 @@ class VSWirksController {
         return this.ragSearch(payload || {});
       case "vswirks:generateImage":
         return this.generateImage(payload || {});
+      case "vswirks:synthesizeSpeech":
+        return this.synthesizeSpeech(payload || {});
       default:
         return null;
     }

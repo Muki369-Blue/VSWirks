@@ -172,6 +172,7 @@
     studioQuickResponse: document.getElementById("studioQuickResponse"),
     studioVoice: document.getElementById("studioVoice"),
     studioVoiceTest: document.getElementById("studioVoiceTest"),
+    studioVoiceStop: document.getElementById("studioVoiceStop"),
     studioVoiceInput: document.getElementById("studioVoiceInput"),
     studioProjectList: document.getElementById("studioProjectList"),
     studioNewProject: document.getElementById("studioNewProject"),
@@ -1004,50 +1005,30 @@
     elements.studioPrompt.value = "";
   }
 
-  // ── Voice synthesis (human personas) ────────────────
+  // ── Voice synthesis (Kokoro TTS — emotional, human-sounding) ──
 
-  // 6 curated voice personas — 4 female, 2 male, diverse backgrounds
-  // Each maps a human name to preferred macOS system voice names (in priority order)
+  // 6 curated voice personas powered by Kokoro TTS (82M param model)
+  // Each maps to a specific Kokoro voice trained on real speech data
   const VOICE_PERSONAS = [
-    { name: "Zola",    desc: "Warm, confident (Female)",   gender: "F", prefer: ["Tessa", "Fiona", "Samantha", "Karen"] },
-    { name: "Mei",     desc: "Clear, precise (Female)",    gender: "F", prefer: ["Karen", "Samantha", "Serena", "Tessa"] },
-    { name: "Claire",  desc: "Friendly, expressive (Female)", gender: "F", prefer: ["Samantha", "Serena", "Victoria", "Fiona"] },
-    { name: "Priya",   desc: "Articulate, composed (Female)", gender: "F", prefer: ["Veena", "Isha", "Samantha", "Moira"] },
-    { name: "Marcus",  desc: "Deep, steady (Male)",        gender: "M", prefer: ["Daniel", "Alex", "Tom", "Oliver"] },
-    { name: "James",   desc: "Energetic, clear (Male)",    gender: "M", prefer: ["Alex", "Tom", "Daniel", "Oliver"] }
+    { name: "Zola",    desc: "Warm, confident (Female)",      kokoroVoice: "af_heart" },
+    { name: "Mei",     desc: "Clear, precise (Female)",       kokoroVoice: "af_bella" },
+    { name: "Claire",  desc: "Friendly, expressive (Female)", kokoroVoice: "bf_emma" },
+    { name: "Priya",   desc: "Articulate, composed (Female)", kokoroVoice: "af_nicole" },
+    { name: "Marcus",  desc: "Deep, steady (Male)",           kokoroVoice: "am_michael" },
+    { name: "James",   desc: "Energetic, clear (Male)",       kokoroVoice: "am_puck" }
   ];
 
-  let resolvedVoiceMap = {}; // persona name → voiceURI
+  let audioCtx = null;
+  let currentAudioSource = null;
+
+  function getAudioContext() {
+    if (!audioCtx) audioCtx = new AudioContext();
+    return audioCtx;
+  }
 
   function populateStudioVoices() {
-    const allVoices = speechSynthesis.getVoices().filter((v) => v.lang.startsWith("en"));
-    if (!allVoices.length) return;
-
-    resolvedVoiceMap = {};
     elements.studioVoice.innerHTML = '<option value="">Off</option>';
-
     VOICE_PERSONAS.forEach((persona) => {
-      // Find the best available system voice matching this persona
-      let matched = null;
-      for (const pref of persona.prefer) {
-        matched = allVoices.find((v) => v.name.includes(pref));
-        if (matched) break;
-      }
-      // Fallback: pick any voice roughly matching gender
-      if (!matched) {
-        // Female voices tend to have higher pitch on macOS; male voices tend to be named Daniel/Alex/Tom etc.
-        const genderHints = persona.gender === "M"
-          ? ["Daniel", "Alex", "Tom", "Oliver", "Rishi", "Aaron", "Ralph"]
-          : ["Samantha", "Karen", "Tessa", "Fiona", "Veena", "Moira", "Victoria", "Serena"];
-        for (const hint of genderHints) {
-          matched = allVoices.find((v) => v.name.includes(hint));
-          if (matched) break;
-        }
-      }
-      if (!matched) matched = allVoices[0];
-      if (!matched) return;
-
-      resolvedVoiceMap[persona.name] = matched.voiceURI;
       const opt = document.createElement("option");
       opt.value = persona.name;
       opt.textContent = `${persona.name} — ${persona.desc}`;
@@ -1055,43 +1036,63 @@
     });
   }
 
-  function speakText(text) {
+  function stopSpeaking() {
+    if (currentAudioSource) {
+      try { currentAudioSource.stop(); } catch { /* already stopped */ }
+      currentAudioSource = null;
+    }
+    // Also stop any Web Speech API fallback
+    if (typeof speechSynthesis !== "undefined") {
+      speechSynthesis.cancel();
+    }
+  }
+
+  async function speakText(text) {
     if (!studioVoiceId || !text) return;
-    speechSynthesis.cancel();
+    stopSpeaking();
 
-    const voiceURI = resolvedVoiceMap[studioVoiceId];
-    const voice = voiceURI
-      ? speechSynthesis.getVoices().find((v) => v.voiceURI === voiceURI)
-      : null;
+    const persona = VOICE_PERSONAS.find((p) => p.name === studioVoiceId);
+    if (!persona) return;
 
-    // Split long text into natural sentences for more human cadence
-    const sentences = text.slice(0, 3000).match(/[^.!?\n]+[.!?\n]*/g) || [text.slice(0, 3000)];
+    // Try Kokoro TTS via IPC
+    try {
+      elements.studioStatus.textContent = "Generating voice…";
+      const result = await api.invoke("vswirks:synthesizeSpeech", {
+        text: text.slice(0, 3000),
+        voice: persona.kokoroVoice
+      });
 
-    sentences.forEach((sentence, i) => {
-      const trimmed = sentence.trim();
-      if (!trimmed) return;
-      const utterance = new SpeechSynthesisUtterance(trimmed);
-      if (voice) utterance.voice = voice;
+      if (result && result.ok && result.samples && result.samples.length) {
+        const ctx = getAudioContext();
+        if (ctx.state === "suspended") await ctx.resume();
 
-      // Human-like pacing: vary rate and pitch slightly per sentence
-      utterance.rate = 0.95 + Math.random() * 0.12;   // 0.95–1.07
-      utterance.pitch = 0.97 + Math.random() * 0.06;   // 0.97–1.03
+        const buffer = ctx.createBuffer(1, result.samples.length, result.sampleRate || 24000);
+        const channelData = buffer.getChannelData(0);
+        for (let i = 0; i < result.samples.length; i++) {
+          channelData[i] = result.samples[i];
+        }
 
-      // Slight pause between sentences for natural breathing
-      if (i > 0) {
-        const pause = new SpeechSynthesisUtterance(" ");
-        if (voice) pause.voice = voice;
-        pause.rate = 0.5;
-        speechSynthesis.speak(pause);
+        const source = ctx.createBufferSource();
+        source.buffer = buffer;
+        source.connect(ctx.destination);
+        source.onended = () => { currentAudioSource = null; elements.studioStatus.textContent = "Ready"; };
+        currentAudioSource = source;
+        source.start();
+        elements.studioStatus.textContent = `${persona.name} speaking…`;
+        return;
       }
+    } catch { /* Kokoro unavailable, fall through to fallback */ }
+
+    // Fallback: Web Speech API (robotic but always available)
+    elements.studioStatus.textContent = "Ready";
+    if (typeof speechSynthesis !== "undefined") {
+      const utterance = new SpeechSynthesisUtterance(text.slice(0, 2000));
+      utterance.rate = 1.0;
       speechSynthesis.speak(utterance);
-    });
+    }
   }
 
-  if (typeof speechSynthesis !== "undefined") {
-    populateStudioVoices();
-    speechSynthesis.addEventListener("voiceschanged", populateStudioVoices);
-  }
+  populateStudioVoices();
 
   populatePromptTemplates();
   refreshModelPanel();
@@ -2676,8 +2677,9 @@
   elements.studioQuickResponse.addEventListener("change", (e) => { studioFeatures.quickResponse = e.target.checked; });
   elements.studioVoice.addEventListener("change", (e) => { studioVoiceId = e.target.value; });
   elements.studioVoiceTest.addEventListener("click", () => {
-    speakText("Hey, what are you working on? I'm your local dev companion.");
+    speakText("Hey, what are you working on? I'm your local dev companion. Let's build something great together.");
   });
+  elements.studioVoiceStop.addEventListener("click", stopSpeaking);
   elements.studioNewProject.addEventListener("click", () => {
     void api.invoke("vswirks:createProject");
   });

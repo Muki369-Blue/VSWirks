@@ -54,7 +54,8 @@ const IPC_CHANNELS = Object.freeze([
   "vswirks:searchProjectFiles",
   "vswirks:indexProject",
   "vswirks:ragSearch",
-  "vswirks:generateImage"
+  "vswirks:generateImage",
+  "vswirks:synthesizeSpeech"
 ]);
 
 module.exports = {
