@@ -1018,13 +1018,7 @@
     { name: "James",   desc: "Energetic, clear (Male)",       kokoroVoice: "am_puck" }
   ];
 
-  let audioCtx = null;
-  let currentAudioSource = null;
-
-  function getAudioContext() {
-    if (!audioCtx) audioCtx = new AudioContext();
-    return audioCtx;
-  }
+  let currentAudioEl = null;
 
   function populateStudioVoices() {
     elements.studioVoice.innerHTML = '<option value="">Off</option>';
@@ -1037,14 +1031,15 @@
   }
 
   function stopSpeaking() {
-    if (currentAudioSource) {
-      try { currentAudioSource.stop(); } catch { /* already stopped */ }
-      currentAudioSource = null;
+    if (currentAudioEl) {
+      currentAudioEl.pause();
+      currentAudioEl.src = "";
+      currentAudioEl = null;
     }
-    // Also stop any Web Speech API fallback
     if (typeof speechSynthesis !== "undefined") {
       speechSynthesis.cancel();
     }
+    elements.studioStatus.textContent = "Ready";
   }
 
   async function speakText(text) {
@@ -1054,7 +1049,7 @@
     const persona = VOICE_PERSONAS.find((p) => p.name === studioVoiceId);
     if (!persona) return;
 
-    // Try Kokoro TTS via IPC
+    // Try Kokoro TTS via IPC — returns a WAV file path
     try {
       elements.studioStatus.textContent = "Generating voice…";
       const result = await api.invoke("vswirks:synthesizeSpeech", {
@@ -1062,26 +1057,22 @@
         voice: persona.kokoroVoice
       });
 
-      if (result && result.ok && result.samples && result.samples.length) {
-        const ctx = getAudioContext();
-        if (ctx.state === "suspended") await ctx.resume();
-
-        const buffer = ctx.createBuffer(1, result.samples.length, result.sampleRate || 24000);
-        const channelData = buffer.getChannelData(0);
-        for (let i = 0; i < result.samples.length; i++) {
-          channelData[i] = result.samples[i];
-        }
-
-        const source = ctx.createBufferSource();
-        source.buffer = buffer;
-        source.connect(ctx.destination);
-        source.onended = () => { currentAudioSource = null; elements.studioStatus.textContent = "Ready"; };
-        currentAudioSource = source;
-        source.start();
-        elements.studioStatus.textContent = `${persona.name} speaking…`;
+      if (result && result.ok && result.wavPath) {
+        const audio = new Audio(`file://${result.wavPath}`);
+        audio.onended = () => { currentAudioEl = null; elements.studioStatus.textContent = "Ready"; };
+        audio.onerror = () => { currentAudioEl = null; elements.studioStatus.textContent = "Ready"; };
+        currentAudioEl = audio;
+        elements.studioStatus.textContent = `${persona.name} speaking… (${(result.durationMs / 1000).toFixed(1)}s)`;
+        audio.play();
         return;
       }
-    } catch { /* Kokoro unavailable, fall through to fallback */ }
+      // If result exists but not ok, show the error briefly
+      if (result && result.error) {
+        console.warn("Kokoro TTS:", result.error);
+      }
+    } catch (err) {
+      console.warn("Kokoro TTS failed:", err);
+    }
 
     // Fallback: Web Speech API (robotic but always available)
     elements.studioStatus.textContent = "Ready";

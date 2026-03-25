@@ -1,5 +1,9 @@
 "use strict";
 
+const os = require("os");
+const path = require("path");
+const fs = require("fs/promises");
+
 // Kokoro TTS engine — lazy-loaded, cached, runs on CPU via ONNX
 // 82M parameter model, downloads ~80MB on first use from HuggingFace
 
@@ -23,7 +27,6 @@ async function getModel() {
   if (loadingPromise) return loadingPromise;
 
   loadingPromise = (async () => {
-    // Dynamic import for ESM module
     const { KokoroTTS } = await import("kokoro-js");
     ttsInstance = await KokoroTTS.from_pretrained(MODEL_ID, MODEL_OPTIONS);
     loadingPromise = null;
@@ -34,10 +37,11 @@ async function getModel() {
 }
 
 /**
- * Synthesize speech from text using Kokoro TTS.
+ * Synthesize speech and save to a WAV file.
+ * Returns the file path — much faster than sending raw samples over IPC.
  * @param {string} text - Text to speak (max ~3000 chars)
  * @param {string} voiceId - Kokoro voice ID (e.g. "af_heart")
- * @returns {{ samples: number[], sampleRate: number }} PCM audio data
+ * @returns {{ wavPath: string, sampleRate: number, durationMs: number }}
  */
 async function synthesize(text, voiceId) {
   const tts = await getModel();
@@ -46,23 +50,22 @@ async function synthesize(text, voiceId) {
 
   const audio = await tts.generate(trimmed, { voice });
 
-  // audio.data is Float32Array, audio.sampling_rate is number
-  return {
-    samples: Array.from(audio.data),
-    sampleRate: audio.sampling_rate
-  };
+  // audio.audio is Float32Array, audio.sampling_rate is 24000
+  const wavDir = path.join(os.tmpdir(), "vswirks-tts");
+  await fs.mkdir(wavDir, { recursive: true }).catch(() => {});
+  const wavPath = path.join(wavDir, `tts-${Date.now()}.wav`);
+
+  // Use kokoro's built-in save method (writes proper WAV)
+  audio.save(wavPath);
+
+  const durationMs = Math.round((audio.audio.length / audio.sampling_rate) * 1000);
+  return { wavPath, sampleRate: audio.sampling_rate, durationMs };
 }
 
-/**
- * Check if the model is loaded (for status display).
- */
 function isLoaded() {
   return ttsInstance !== null;
 }
 
-/**
- * List available voice IDs.
- */
 function listVoices() {
   return Object.keys(VOICE_MAP);
 }

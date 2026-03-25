@@ -628,7 +628,7 @@ class VSWirksController {
     if (!text) return { ok: false, error: "No text provided" };
     try {
       const result = await ttssynthesize(text, voice || "af_heart");
-      return { ok: true, samples: result.samples, sampleRate: result.sampleRate };
+      return { ok: true, wavPath: result.wavPath, sampleRate: result.sampleRate, durationMs: result.durationMs };
     } catch (error) {
       return { ok: false, error: `TTS failed: ${error.message}` };
     }
