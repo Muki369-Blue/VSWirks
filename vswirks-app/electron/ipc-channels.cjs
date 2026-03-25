@@ -43,9 +43,18 @@ const IPC_CHANNELS = Object.freeze([
   "vswirks:pullOllamaModel",
   "vswirks:deleteOllamaModel",
   "vswirks:getGitStatus",
+  "vswirks:gitStage",
+  "vswirks:gitUnstage",
+  "vswirks:gitCommit",
+  "vswirks:gitDiff",
+  "vswirks:gitBranches",
+  "vswirks:gitCheckout",
   "vswirks:runCommand",
   "vswirks:compareModels",
-  "vswirks:searchProjectFiles"
+  "vswirks:searchProjectFiles",
+  "vswirks:indexProject",
+  "vswirks:ragSearch",
+  "vswirks:generateImage"
 ]);
 
 module.exports = {

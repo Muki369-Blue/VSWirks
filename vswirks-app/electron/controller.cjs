@@ -359,6 +359,268 @@ class VSWirksController {
     }
   }
 
+  // ── Git interactive operations ─────────────────────
+
+  _gitProjectCwd(projectId) {
+    const project = projectId
+      ? this.projects.find((p) => p.id === projectId)
+      : this.getActiveProject();
+    if (!project || !project.workspaceRoot) return null;
+    return project.workspaceRoot;
+  }
+
+  async gitStage({ files } = {}) {
+    const cwd = this._gitProjectCwd();
+    if (!cwd) return { ok: false, error: "No project workspace" };
+    if (!Array.isArray(files) || !files.length) return { ok: false, error: "No files specified" };
+    try {
+      cp.execSync(`git add -- ${files.map((f) => JSON.stringify(f)).join(" ")}`, { cwd, encoding: "utf-8", timeout: 10000 });
+      return { ok: true };
+    } catch (error) {
+      return { ok: false, error: error.message };
+    }
+  }
+
+  async gitUnstage({ files } = {}) {
+    const cwd = this._gitProjectCwd();
+    if (!cwd) return { ok: false, error: "No project workspace" };
+    if (!Array.isArray(files) || !files.length) return { ok: false, error: "No files specified" };
+    try {
+      cp.execSync(`git restore --staged -- ${files.map((f) => JSON.stringify(f)).join(" ")}`, { cwd, encoding: "utf-8", timeout: 10000 });
+      return { ok: true };
+    } catch (error) {
+      return { ok: false, error: error.message };
+    }
+  }
+
+  async gitCommit({ message } = {}) {
+    const cwd = this._gitProjectCwd();
+    if (!cwd) return { ok: false, error: "No project workspace" };
+    if (!message || !message.trim()) return { ok: false, error: "No commit message" };
+    try {
+      const output = cp.execSync(`git commit -m ${JSON.stringify(message.trim())}`, { cwd, encoding: "utf-8", timeout: 30000 });
+      return { ok: true, output: output.slice(0, 5000) };
+    } catch (error) {
+      return { ok: false, error: (error.stderr || error.message).slice(0, 2000) };
+    }
+  }
+
+  async gitDiff({ file } = {}) {
+    const cwd = this._gitProjectCwd();
+    if (!cwd) return { ok: false, error: "No project workspace" };
+    try {
+      const args = file ? `-- ${JSON.stringify(file)}` : "";
+      const staged = cp.execSync(`git diff --cached ${args}`, { cwd, encoding: "utf-8", timeout: 10000 }).slice(0, 20000);
+      const unstaged = cp.execSync(`git diff ${args}`, { cwd, encoding: "utf-8", timeout: 10000 }).slice(0, 20000);
+      return { ok: true, staged, unstaged };
+    } catch (error) {
+      return { ok: false, error: error.message };
+    }
+  }
+
+  async gitBranches() {
+    const cwd = this._gitProjectCwd();
+    if (!cwd) return { ok: false, error: "No project workspace" };
+    try {
+      const raw = cp.execSync("git branch --no-color", { cwd, encoding: "utf-8", timeout: 5000 }).trim();
+      const branches = raw.split("\n").map((b) => {
+        const current = b.startsWith("* ");
+        return { name: b.replace(/^\*?\s+/, ""), current };
+      });
+      return { ok: true, branches };
+    } catch (error) {
+      return { ok: false, error: error.message };
+    }
+  }
+
+  async gitCheckout({ branch } = {}) {
+    const cwd = this._gitProjectCwd();
+    if (!cwd) return { ok: false, error: "No project workspace" };
+    if (!branch) return { ok: false, error: "No branch specified" };
+    try {
+      cp.execSync(`git checkout ${JSON.stringify(branch)}`, { cwd, encoding: "utf-8", timeout: 15000 });
+      return { ok: true };
+    } catch (error) {
+      return { ok: false, error: error.message };
+    }
+  }
+
+  // ── RAG / Project Indexing ─────────────────────────
+
+  async indexProject({ projectId } = {}) {
+    const project = projectId
+      ? this.projects.find((p) => p.id === projectId)
+      : this.getActiveProject();
+    if (!project || !project.workspaceRoot) {
+      return { ok: false, error: "No project workspace" };
+    }
+    const root = project.workspaceRoot;
+    const baseUrl = this.settings.runtimeBaseUrl || DEFAULT_RUNTIME_BASE_URL;
+
+    // Collect files
+    const walkDir = async (dir, prefix = "") => {
+      const entries = await fs.readdir(dir, { withFileTypes: true }).catch(() => []);
+      const results = [];
+      for (const entry of entries) {
+        const rel = prefix ? `${prefix}/${entry.name}` : entry.name;
+        if (entry.name.startsWith(".") || ["node_modules", "__pycache__", "venv", ".git", "dist", "build"].includes(entry.name)) continue;
+        if (entry.isDirectory()) {
+          results.push(...await walkDir(path.join(dir, entry.name), rel));
+        } else if (/\.(js|ts|py|rs|go|java|json|md|html|css|cjs|mjs|tsx|jsx|yaml|yml|toml|cfg|sh)$/i.test(entry.name)) {
+          results.push(rel);
+        }
+      }
+      return results;
+    };
+
+    const files = await walkDir(root);
+    const chunks = [];
+    for (const file of files.slice(0, 200)) {
+      try {
+        const content = await fs.readFile(path.join(root, file), "utf-8");
+        // Split into ~400-token chunks (~1600 chars)
+        const lines = content.split("\n");
+        for (let i = 0; i < lines.length; i += 40) {
+          const chunk = lines.slice(i, i + 40).join("\n").trim();
+          if (chunk.length > 20) {
+            chunks.push({ file, startLine: i + 1, text: chunk.slice(0, 1600) });
+          }
+        }
+      } catch { /* skip unreadable files */ }
+    }
+
+    // Embed via runtime /v1/embeddings
+    const batchSize = 20;
+    const vectors = [];
+    for (let i = 0; i < chunks.length; i += batchSize) {
+      const batch = chunks.slice(i, i + batchSize);
+      try {
+        const result = await fetchRuntimeJson(baseUrl, "/embeddings", {
+          model: "nomic-embed-text",
+          input: batch.map((c) => `${c.file}:${c.startLine}\n${c.text}`)
+        });
+        if (result && Array.isArray(result.data)) {
+          result.data.forEach((item, j) => {
+            vectors.push({ ...batch[j], embedding: item.embedding });
+          });
+        }
+      } catch {
+        // If embeddings fail, store chunks without vectors (text search fallback)
+        batch.forEach((c) => vectors.push({ ...c, embedding: null }));
+      }
+    }
+
+    // Save index
+    const indexDir = path.join(root, ".vswirks");
+    await fs.mkdir(indexDir, { recursive: true }).catch(() => {});
+    await fs.writeFile(
+      path.join(indexDir, "rag-index.json"),
+      JSON.stringify({ version: 1, indexed: new Date().toISOString(), chunks: vectors.length, data: vectors }, null, 0),
+      "utf-8"
+    );
+
+    return { ok: true, files: files.length, chunks: vectors.length };
+  }
+
+  async ragSearch({ query, projectId, topK = 5 } = {}) {
+    if (!query) return { ok: false, results: [] };
+    const project = projectId
+      ? this.projects.find((p) => p.id === projectId)
+      : this.getActiveProject();
+    if (!project || !project.workspaceRoot) {
+      return { ok: false, error: "No project workspace" };
+    }
+
+    const indexPath = path.join(project.workspaceRoot, ".vswirks", "rag-index.json");
+    let index;
+    try {
+      index = JSON.parse(await fs.readFile(indexPath, "utf-8"));
+    } catch {
+      return { ok: false, error: "No RAG index found. Index the project first." };
+    }
+
+    const baseUrl = this.settings.runtimeBaseUrl || DEFAULT_RUNTIME_BASE_URL;
+    const hasVectors = index.data.some((d) => d.embedding);
+
+    if (hasVectors) {
+      // Vector search
+      try {
+        const embedResult = await fetchRuntimeJson(baseUrl, "/embeddings", {
+          model: "nomic-embed-text",
+          input: [query]
+        });
+        const queryVec = embedResult && embedResult.data && embedResult.data[0] && embedResult.data[0].embedding;
+        if (queryVec) {
+          const scored = index.data
+            .filter((d) => d.embedding)
+            .map((d) => {
+              let dot = 0, normA = 0, normB = 0;
+              for (let i = 0; i < queryVec.length; i++) {
+                dot += queryVec[i] * d.embedding[i];
+                normA += queryVec[i] * queryVec[i];
+                normB += d.embedding[i] * d.embedding[i];
+              }
+              const score = dot / (Math.sqrt(normA) * Math.sqrt(normB) + 1e-10);
+              return { file: d.file, startLine: d.startLine, text: d.text, score };
+            })
+            .sort((a, b) => b.score - a.score)
+            .slice(0, topK);
+          return { ok: true, results: scored };
+        }
+      } catch { /* fall through to text search */ }
+    }
+
+    // Fallback: text search
+    const queryLower = query.toLowerCase();
+    const results = index.data
+      .map((d) => {
+        const idx = d.text.toLowerCase().indexOf(queryLower);
+        return idx >= 0 ? { file: d.file, startLine: d.startLine, text: d.text, score: 1 } : null;
+      })
+      .filter(Boolean)
+      .slice(0, topK);
+    return { ok: true, results };
+  }
+
+  // ── Image generation ──────────────────────────────
+
+  async generateImage({ prompt, width = 512, height = 512 } = {}) {
+    if (!prompt) return { ok: false, error: "No prompt provided" };
+    const project = this.getActiveProject();
+    const outputDir = project && project.workspaceRoot
+      ? path.join(project.workspaceRoot, ".vswirks", "generated")
+      : path.join(os.tmpdir(), "vswirks-generated");
+    await fs.mkdir(outputDir, { recursive: true }).catch(() => {});
+    const outputFile = path.join(outputDir, `img-${Date.now()}.png`);
+
+    // Try runtime /v1/images/generations first
+    const baseUrl = this.settings.runtimeBaseUrl || DEFAULT_RUNTIME_BASE_URL;
+    try {
+      const result = await fetchRuntimeJson(baseUrl, "/images/generations", {
+        model: "stable-diffusion",
+        prompt,
+        size: `${width}x${height}`,
+        n: 1,
+        response_format: "b64_json"
+      });
+      if (result && result.data && result.data[0] && result.data[0].b64_json) {
+        await fs.writeFile(outputFile, Buffer.from(result.data[0].b64_json, "base64"));
+        return { ok: true, path: outputFile };
+      }
+    } catch { /* fall through to CLI */ }
+
+    // Fallback: try mlx_stable_diffusion CLI
+    try {
+      cp.execSync(
+        `python -m mlx_stable_diffusion.generate --prompt ${JSON.stringify(prompt)} --output ${JSON.stringify(outputFile)} --width ${width} --height ${height}`,
+        { encoding: "utf-8", timeout: 120000 }
+      );
+      return { ok: true, path: outputFile };
+    } catch (error) {
+      return { ok: false, error: `Image generation failed: ${error.message}` };
+    }
+  }
+
   cleanup() {
     if (this.bridgePollHandle) {
       clearInterval(this.bridgePollHandle);
@@ -480,12 +742,30 @@ class VSWirksController {
         return this.deleteOllamaModel(payload || {});
       case "vswirks:getGitStatus":
         return this.getGitStatus(payload || {});
+      case "vswirks:gitStage":
+        return this.gitStage(payload || {});
+      case "vswirks:gitUnstage":
+        return this.gitUnstage(payload || {});
+      case "vswirks:gitCommit":
+        return this.gitCommit(payload || {});
+      case "vswirks:gitDiff":
+        return this.gitDiff(payload || {});
+      case "vswirks:gitBranches":
+        return this.gitBranches();
+      case "vswirks:gitCheckout":
+        return this.gitCheckout(payload || {});
       case "vswirks:runCommand":
         return this.runCommand(payload || {});
       case "vswirks:compareModels":
         return this.compareModels(payload || {});
       case "vswirks:searchProjectFiles":
         return this.searchProjectFiles(payload || {});
+      case "vswirks:indexProject":
+        return this.indexProject(payload || {});
+      case "vswirks:ragSearch":
+        return this.ragSearch(payload || {});
+      case "vswirks:generateImage":
+        return this.generateImage(payload || {});
       default:
         return null;
     }

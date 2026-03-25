@@ -9,6 +9,44 @@
     return div.innerHTML;
   }
 
+  // ── Syntax highlighting (inline, no dependencies) ────
+  const SYN_KEYWORDS = new Set([
+    "abstract","async","await","break","case","catch","class","const","continue",
+    "debugger","default","delete","do","else","enum","export","extends","false",
+    "finally","for","from","function","if","import","in","instanceof","let","new",
+    "null","of","return","static","super","switch","this","throw","true","try",
+    "typeof","undefined","var","void","while","with","yield",
+    "def","elif","except","lambda","pass","raise","self","None","True","False",
+    "fn","impl","pub","mod","use","crate","mut","struct","trait","match","loop","move"
+  ]);
+  const SYN_BUILTINS = new Set([
+    "console","document","window","require","module","exports","process",
+    "Array","Object","String","Number","Boolean","Map","Set","Promise","Error",
+    "Math","JSON","Date","RegExp","parseInt","parseFloat","setTimeout","setInterval",
+    "print","len","range","list","dict","tuple","int","str","float","type","open",
+    "println","vec","Box","Option","Result","Some","Ok","Err"
+  ]);
+
+  function highlightCode(code, lang) {
+    // Tokenize and highlight with spans
+    let result = code;
+    // Strings (double, single, backtick)
+    result = result.replace(/(["'`])(?:(?!\1|\\).|\\.)*?\1/g, '<span class="syn-str">$&</span>');
+    // Comments (// and #)
+    result = result.replace(/(\/\/.*?$|#(?!include|define|if).*?$)/gm, '<span class="syn-cmt">$&</span>');
+    // Numbers
+    result = result.replace(/\b(\d+\.?\d*(?:e[+-]?\d+)?|0x[0-9a-fA-F]+)\b/g, '<span class="syn-num">$&</span>');
+    // Keywords and builtins (word boundary match)
+    result = result.replace(/\b([a-zA-Z_]\w*)\b/g, (match) => {
+      if (SYN_KEYWORDS.has(match)) return `<span class="syn-kw">${match}</span>`;
+      if (SYN_BUILTINS.has(match)) return `<span class="syn-bi">${match}</span>`;
+      return match;
+    });
+    // Decorators / annotations
+    result = result.replace(/@\w+/g, '<span class="syn-dec">$&</span>');
+    return result;
+  }
+
   /** Lightweight Markdown → HTML (safe: all text is escaped first). */
   function renderMarkdown(raw) {
     const safe = escapeHtml(raw);
@@ -16,8 +54,10 @@
 
     // Fenced code blocks: ```lang\n...\n```
     html = html.replace(/```(\w*)\n([\s\S]*?)```/g, (_m, lang, code) => {
-      const cls = lang ? ` class="lang-${lang}"` : "";
-      return `<pre class="md-code-block"><code${cls}>${code.trimEnd()}</code></pre>`;
+      const highlighted = highlightCode(code.trimEnd(), lang);
+      const langLabel = lang ? `<span class="code-lang">${lang}</span>` : "";
+      const copyBtn = `<button class="code-copy-btn" onclick="navigator.clipboard.writeText(this.closest('pre').querySelector('code').textContent).then(()=>{this.textContent='Copied!';setTimeout(()=>this.textContent='Copy',1500)})">Copy</button>`;
+      return `<pre class="md-code-block">${langLabel}${copyBtn}<code class="lang-${lang || "text"}">${highlighted}</code></pre>`;
     });
 
     // Inline code
@@ -146,7 +186,19 @@
     studioRefreshGit: document.getElementById("studioRefreshGit"),
     studioSearch: document.getElementById("studioSearch"),
     studioSearchResults: document.getElementById("studioSearchResults"),
+    studioIndexProject: document.getElementById("studioIndexProject"),
+    studioRagSearch: document.getElementById("studioRagSearch"),
     studioFileChanges: document.getElementById("studioFileChanges"),
+    studioAutoContext: document.getElementById("studioAutoContext"),
+    studioGitFiles: document.getElementById("studioGitFiles"),
+    studioGitCommitRow: document.getElementById("studioGitCommitRow"),
+    studioGitMessage: document.getElementById("studioGitMessage"),
+    studioGitCommitBtn: document.getElementById("studioGitCommitBtn"),
+    studioGitBranchRow: document.getElementById("studioGitBranchRow"),
+    studioGitBranchSelect: document.getElementById("studioGitBranchSelect"),
+    studioGitCheckoutBtn: document.getElementById("studioGitCheckoutBtn"),
+    studioGitDiffPreview: document.getElementById("studioGitDiffPreview"),
+    studioGenerateImage: document.getElementById("studioGenerateImage"),
     studioModelPanel: document.getElementById("studioModelPanel"),
     studioRefreshModels: document.getElementById("studioRefreshModels"),
     studioModelName: document.getElementById("studioModelName"),
@@ -609,12 +661,16 @@
     });
   }
 
-  // ── Git panel ────────────────────────────────────
+  // ── Git panel (enhanced) ─────────────────────────
 
   async function refreshGitPanel() {
     const result = await api.invoke("vswirks:getGitStatus");
     if (!result || !result.ok) {
       elements.studioGitPanel.innerHTML = `<span class="meta">${escapeHtml(result && result.error ? result.error : "No git repo")}</span>`;
+      elements.studioGitFiles.innerHTML = "";
+      elements.studioGitCommitRow.style.display = "none";
+      elements.studioGitBranchRow.style.display = "none";
+      elements.studioGitDiffPreview.style.display = "none";
       return;
     }
     const lines = [
@@ -629,6 +685,90 @@
       lines.push("</div>");
     }
     elements.studioGitPanel.innerHTML = lines.join("");
+
+    // Render changed files with stage/unstage toggle
+    elements.studioGitFiles.innerHTML = "";
+    if (result.statusLines && result.statusLines.length) {
+      elements.studioGitCommitRow.style.display = "";
+      result.statusLines.slice(0, 20).forEach((line) => {
+        const indexStatus = line.charAt(0);
+        const workStatus = line.charAt(1);
+        const filePath = line.slice(3).trim();
+        const isStaged = indexStatus !== " " && indexStatus !== "?";
+
+        const row = document.createElement("div");
+        row.className = "git-file-row";
+        row.title = filePath;
+
+        const statusBadge = document.createElement("span");
+        statusBadge.className = `git-file-status ${isStaged ? "staged" : "unstaged"}`;
+        statusBadge.textContent = isStaged ? indexStatus : (workStatus === "?" ? "?" : workStatus);
+        row.appendChild(statusBadge);
+
+        const name = document.createElement("span");
+        name.className = "git-file-name";
+        name.textContent = filePath;
+        name.addEventListener("click", () => showGitDiff(filePath));
+        row.appendChild(name);
+
+        const toggleBtn = document.createElement("button");
+        toggleBtn.className = "ghost-button compact-button git-stage-btn";
+        toggleBtn.textContent = isStaged ? "Unstage" : "Stage";
+        toggleBtn.addEventListener("click", async () => {
+          if (isStaged) {
+            await api.invoke("vswirks:gitUnstage", { files: [filePath] });
+          } else {
+            await api.invoke("vswirks:gitStage", { files: [filePath] });
+          }
+          refreshGitPanel();
+        });
+        row.appendChild(toggleBtn);
+
+        elements.studioGitFiles.appendChild(row);
+      });
+    } else {
+      elements.studioGitCommitRow.style.display = "none";
+    }
+
+    // Branch switcher
+    const branchResult = await api.invoke("vswirks:gitBranches");
+    if (branchResult && branchResult.ok && branchResult.branches.length > 1) {
+      elements.studioGitBranchRow.style.display = "";
+      elements.studioGitBranchSelect.innerHTML = "";
+      branchResult.branches.forEach((b) => {
+        const opt = document.createElement("option");
+        opt.value = b.name;
+        opt.textContent = b.name;
+        if (b.current) opt.selected = true;
+        elements.studioGitBranchSelect.appendChild(opt);
+      });
+    } else {
+      elements.studioGitBranchRow.style.display = "none";
+    }
+  }
+
+  async function showGitDiff(filePath) {
+    const result = await api.invoke("vswirks:gitDiff", { file: filePath });
+    if (!result || !result.ok) {
+      elements.studioGitDiffPreview.style.display = "none";
+      return;
+    }
+    const diff = (result.staged || "") + (result.unstaged || "");
+    if (!diff.trim()) {
+      elements.studioGitDiffPreview.style.display = "none";
+      return;
+    }
+    elements.studioGitDiffPreview.style.display = "";
+    elements.studioGitDiffPreview.innerHTML = `<pre class="md-code-block"><code class="lang-diff">${highlightDiff(escapeHtml(diff.slice(0, 5000)))}</code></pre>`;
+  }
+
+  function highlightDiff(text) {
+    return text.split("\n").map((line) => {
+      if (line.startsWith("+")) return `<span class="diff-add">${line}</span>`;
+      if (line.startsWith("-")) return `<span class="diff-del">${line}</span>`;
+      if (line.startsWith("@@")) return `<span class="diff-hunk">${line}</span>`;
+      return line;
+    }).join("\n");
   }
 
   // ── Model panel ──────────────────────────────────
@@ -679,6 +819,80 @@
       row.innerHTML = `<span class="file-change-icon">${icon}</span><span class="file-change-name">${escapeHtml(c.file)}</span>`;
       elements.studioFileChanges.appendChild(row);
     });
+  }
+
+  // ── RAG search ──────────────────────────────────
+
+  async function indexProject() {
+    elements.studioIndexProject.disabled = true;
+    elements.studioIndexProject.textContent = "Indexing…";
+    const result = await api.invoke("vswirks:indexProject", {});
+    elements.studioIndexProject.disabled = false;
+    elements.studioIndexProject.textContent = "Index";
+    if (result && result.ok) {
+      elements.studioSearchResults.innerHTML = `<div class="meta">Indexed ${result.files} files, ${result.chunks} chunks</div>`;
+    } else {
+      elements.studioSearchResults.innerHTML = `<div class="meta" style="color:var(--bad)">${escapeHtml(result ? result.error : "Failed")}</div>`;
+    }
+  }
+
+  async function ragSearch() {
+    const query = elements.studioSearch.value.trim();
+    if (!query) return;
+    elements.studioSearchResults.innerHTML = '<div class="meta">Searching…</div>';
+    const result = await api.invoke("vswirks:ragSearch", { query });
+    if (!result || !result.ok) {
+      elements.studioSearchResults.innerHTML = `<div class="meta" style="color:var(--bad)">${escapeHtml(result ? result.error : "Failed")}</div>`;
+      return;
+    }
+    if (!result.results.length) {
+      elements.studioSearchResults.innerHTML = '<div class="meta">No results</div>';
+      return;
+    }
+    elements.studioSearchResults.innerHTML = "";
+    result.results.forEach((r) => {
+      const row = document.createElement("div");
+      row.className = "search-result-row";
+      row.innerHTML = `<strong>${escapeHtml(r.file)}:${r.startLine}</strong><span class="meta">${r.score ? ` (${(r.score * 100).toFixed(0)}%)` : ""}</span><pre class="search-result-snippet">${escapeHtml(r.text.slice(0, 200))}</pre>`;
+      elements.studioSearchResults.appendChild(row);
+    });
+  }
+
+  // ── Auto-context ────────────────────────────────
+
+  let autoContextEnabled = persisted.autoContext || false;
+
+  function getAutoContextSnippet() {
+    if (!autoContextEnabled) return "";
+    const changes = state.recentFileChanges || [];
+    if (!changes.length) return "";
+    return "\n\n[Auto-context: recently changed files]\n" + changes.slice(0, 5).map((c) => `- ${c.file} (${c.type})`).join("\n");
+  }
+
+  // ── Image generation ────────────────────────────
+
+  async function generateImage() {
+    const prompt = elements.studioPrompt.value.trim();
+    if (!prompt) { alert("Enter an image description first"); return; }
+
+    elements.studioGenerateImage.disabled = true;
+    elements.studioStatus.textContent = "Generating image…";
+
+    const result = await api.invoke("vswirks:generateImage", { prompt });
+
+    elements.studioGenerateImage.disabled = false;
+    elements.studioStatus.textContent = "Ready";
+
+    if (result && result.ok) {
+      // Show the generated image inline as a chat message
+      const imgCard = document.createElement("div");
+      imgCard.className = "message-card assistant";
+      imgCard.innerHTML = `<div class="message-header">Studio</div><div class="message-body"><p><em>Generated image for: "${escapeHtml(prompt)}"</em></p><img src="file://${escapeHtml(result.path)}" class="generated-image" alt="Generated image" /></div>`;
+      elements.studioMessages.appendChild(imgCard);
+      elements.studioMessages.scrollTop = elements.studioMessages.scrollHeight;
+    } else {
+      alert(result ? result.error : "Image generation failed");
+    }
   }
 
   // ── Studio tab switching ──────────────────────────
@@ -766,8 +980,11 @@
   }
 
   function studioSendPrompt() {
-    const prompt = elements.studioPrompt.value.trim();
-    if (!prompt || state.pending) return;
+    const rawPrompt = elements.studioPrompt.value.trim();
+    if (!rawPrompt || state.pending) return;
+
+    const autoContext = getAutoContextSnippet();
+    const prompt = rawPrompt + autoContext;
 
     const features = [];
     if (studioFeatures.deepResearch) features.push("deep-research");
@@ -2454,6 +2671,51 @@
   });
   elements.studioRefreshGit.addEventListener("click", () => refreshGitPanel());
   elements.studioRefreshModels.addEventListener("click", () => refreshModelPanel());
+
+  // Git commit
+  elements.studioGitCommitBtn.addEventListener("click", async () => {
+    const message = elements.studioGitMessage.value.trim();
+    if (!message) return;
+    elements.studioGitCommitBtn.disabled = true;
+    const result = await api.invoke("vswirks:gitCommit", { message });
+    elements.studioGitCommitBtn.disabled = false;
+    if (result && result.ok) {
+      elements.studioGitMessage.value = "";
+      refreshGitPanel();
+    } else {
+      alert(result ? result.error : "Commit failed");
+    }
+  });
+  elements.studioGitMessage.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") { e.preventDefault(); elements.studioGitCommitBtn.click(); }
+  });
+
+  // Git branch checkout
+  elements.studioGitCheckoutBtn.addEventListener("click", async () => {
+    const branch = elements.studioGitBranchSelect.value;
+    if (!branch) return;
+    const result = await api.invoke("vswirks:gitCheckout", { branch });
+    if (result && result.ok) refreshGitPanel();
+    else alert(result ? result.error : "Checkout failed");
+  });
+
+  // RAG indexing & search
+  elements.studioIndexProject.addEventListener("click", indexProject);
+  elements.studioRagSearch.addEventListener("click", ragSearch);
+  elements.studioSearch.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && e.shiftKey) { e.preventDefault(); ragSearch(); }
+  });
+
+  // Auto-context toggle
+  elements.studioAutoContext.checked = autoContextEnabled;
+  elements.studioAutoContext.addEventListener("change", () => {
+    autoContextEnabled = elements.studioAutoContext.checked;
+    persisted.autoContext = autoContextEnabled;
+    localStorage.setItem("vswirks-ui", JSON.stringify(persisted));
+  });
+
+  // Image generation
+  elements.studioGenerateImage.addEventListener("click", generateImage);
 
   // Studio tabs
   [elements.studioTabChat, elements.studioTabTerminal, elements.studioTabCompare].forEach((btn) => {

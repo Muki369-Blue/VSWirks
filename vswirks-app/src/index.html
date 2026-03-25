@@ -56,6 +56,10 @@
           </div>
           <div class="studio-search">
             <input id="studioSearch" type="text" placeholder="Search files…" class="compact-input" />
+            <div class="studio-search-actions">
+              <button id="studioIndexProject" class="ghost-button compact-button" title="Index project files for RAG semantic search">Index</button>
+              <button id="studioRagSearch" class="ghost-button compact-button" title="Semantic search using RAG embeddings">RAG</button>
+            </div>
             <div id="studioSearchResults" class="studio-search-results"></div>
           </div>
           <div id="studioProjectList" class="studio-project-list"></div>
@@ -68,11 +72,25 @@
             <div id="studioGitPanel" class="studio-git-panel">
               <span class="meta">Select a project</span>
             </div>
+            <div id="studioGitFiles" class="studio-git-files"></div>
+            <div id="studioGitCommitRow" class="studio-git-commit-row" style="display:none">
+              <input id="studioGitMessage" type="text" placeholder="Commit message…" class="compact-input" />
+              <button id="studioGitCommitBtn" class="primary compact-button">Commit</button>
+            </div>
+            <div id="studioGitBranchRow" class="studio-git-branch-row" style="display:none">
+              <select id="studioGitBranchSelect" class="compact-input" title="Switch branch"></select>
+              <button id="studioGitCheckoutBtn" class="ghost-button compact-button">Switch</button>
+            </div>
+            <div id="studioGitDiffPreview" class="studio-git-diff" style="display:none"></div>
           </div>
 
           <div class="studio-sidebar-section">
             <div class="studio-sidebar-header">
               <span>File Changes</span>
+              <label class="auto-context-toggle" title="Auto-attach recent file changes as context in prompts">
+                <input id="studioAutoContext" type="checkbox" />
+                <span class="meta">Auto</span>
+              </label>
             </div>
             <div id="studioFileChanges" class="studio-file-changes">
               <span class="meta">Watching…</span>
@@ -173,6 +191,7 @@
           <textarea id="studioPrompt" rows="3" placeholder="What are you working on?"></textarea>
           <div class="studio-send-row">
             <button id="studioVoiceInput" class="icon-btn" title="Hold to speak — voice input">🎙</button>
+            <button id="studioGenerateImage" class="icon-btn" title="Generate an image from a text prompt using MLX Stable Diffusion">🎨</button>
             <span id="studioStatus" class="status">Ready</span>
             <button id="studioSend" class="primary" title="Send message">Send</button>
           </div>
