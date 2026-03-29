@@ -4,6 +4,8 @@ const http = require("node:http");
 
 const {
   fetchRuntimeJson,
+  probeRuntimeHealth,
+  waitForRuntimeHealthy,
   RUNTIME_JSON_REQUEST_TIMEOUT_MS
 } = require("../../shared/runtime-client.js");
 
@@ -82,4 +84,101 @@ test("fetchRuntimeJson surfaces non-2xx runtime errors", async () => {
 
 test("runtime JSON timeout is extended for long-running local model requests", () => {
   assert.equal(RUNTIME_JSON_REQUEST_TIMEOUT_MS, 15 * 60 * 1000);
+});
+
+test("probeRuntimeHealth accepts the canonical /health endpoint", async () => {
+  await withServer((request, response) => {
+    if (request.url === "/health") {
+      response.setHeader("Content-Type", "application/json");
+      response.end(JSON.stringify({ ok: true }));
+      return;
+    }
+    response.statusCode = 404;
+    response.end("not found");
+  }, async (baseUrl) => {
+    const result = await probeRuntimeHealth(baseUrl);
+    assert.deepEqual(result, {
+      healthy: true,
+      label: "Service ready"
+    });
+  });
+});
+
+test("probeRuntimeHealth accepts /healthz when /health is unavailable", async () => {
+  await withServer((request, response) => {
+    if (request.url === "/health") {
+      response.statusCode = 404;
+      response.end("missing");
+      return;
+    }
+    if (request.url === "/healthz") {
+      response.setHeader("Content-Type", "application/json");
+      response.end(JSON.stringify({ ok: true }));
+      return;
+    }
+    response.statusCode = 404;
+    response.end("not found");
+  }, async (baseUrl) => {
+    const result = await probeRuntimeHealth(baseUrl);
+    assert.deepEqual(result, {
+      healthy: true,
+      label: "Service ready"
+    });
+  });
+});
+
+test("probeRuntimeHealth falls back to /v1/models when health endpoints are unavailable", async () => {
+  await withServer((request, response) => {
+    if (request.url === "/health" || request.url === "/healthz") {
+      response.statusCode = 404;
+      response.end("missing");
+      return;
+    }
+    if (request.url === "/v1/models") {
+      response.setHeader("Content-Type", "application/json");
+      response.end(JSON.stringify({ object: "list", data: [{ id: "llama3.1:8b" }] }));
+      return;
+    }
+    response.statusCode = 404;
+    response.end("not found");
+  }, async (baseUrl) => {
+    const result = await probeRuntimeHealth(baseUrl);
+    assert.deepEqual(result, {
+      healthy: true,
+      label: "Service ready"
+    });
+  });
+});
+
+test("probeRuntimeHealth reports offline when no readiness endpoint succeeds", async () => {
+  await withServer((request, response) => {
+    response.statusCode = 404;
+    response.end("not found");
+  }, async (baseUrl) => {
+    const result = await probeRuntimeHealth(baseUrl);
+    assert.deepEqual(result, {
+      healthy: false,
+      label: "Service offline"
+    });
+  });
+});
+
+test("waitForRuntimeHealthy succeeds when a compatible models endpoint is available", async () => {
+  await withServer((request, response) => {
+    if (request.url === "/health" || request.url === "/healthz") {
+      response.statusCode = 404;
+      response.end("missing");
+      return;
+    }
+    if (request.url === "/v1/models") {
+      response.setHeader("Content-Type", "application/json");
+      response.end(JSON.stringify({ object: "list", data: [{ id: "devstral-small-2" }] }));
+      return;
+    }
+    response.statusCode = 404;
+    response.end("not found");
+  }, async (baseUrl) => {
+    const ready = await waitForRuntimeHealthy(baseUrl, 1000);
+    assert.equal(ready, true);
+  });
 });

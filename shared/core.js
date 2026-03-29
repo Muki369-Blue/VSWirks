@@ -292,6 +292,7 @@ function getDefaultWorkflowPresets() {
       defaultMode: "chat",
       defaultExecutionMode: "plan",
       preferredRole: "chat",
+      buildsSpec: false,
       validationPack: "auto",
       completionContract: "Respond concisely and keep the work local-first."
     })

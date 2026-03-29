@@ -42,8 +42,6 @@ const {
   ensureVSWirksDirs,
   readAppState,
   writeAppState,
-  readBridgeState,
-  updateBridgeState,
   readSettings,
   writeSettings
 } = require("../../shared/vswirks-state");
@@ -51,13 +49,11 @@ const {
   formatWorkspaceLabel,
   describeWorkspaceRoot,
   isPathWithin,
-  openInVSWirksEditor,
-  openPathsInVSWirksEditor,
-  openDiffInVSWirksEditor,
   scanProjectIntelligence,
   runValidationPlan,
   exists
 } = require("./workspace-tools.cjs");
+const { EditorIntegration, EDITOR_INTEGRATION_UNAVAILABLE } = require("./editor-integration.cjs");
 const { isImagePath, createImageAttachment } = require("./image-tools.cjs");
 const { runConversation, buildWorkspaceSystemPrompt } = require("./runner.cjs");
 const { synthesize: ttssynthesize } = require("./tts-engine.cjs");
@@ -72,12 +68,26 @@ class VSWirksController {
   constructor(window, dependencies = {}) {
     this.window = window;
     this.dependencies = {
-      updateBridgeState: dependencies.updateBridgeState || updateBridgeState,
-      openInVSWirksEditor: dependencies.openInVSWirksEditor || openInVSWirksEditor,
-      openPathsInVSWirksEditor: dependencies.openPathsInVSWirksEditor || openPathsInVSWirksEditor,
-      openDiffInVSWirksEditor: dependencies.openDiffInVSWirksEditor || openDiffInVSWirksEditor,
       runConversation: dependencies.runConversation || runConversation
     };
+    this.editorIntegration =
+      dependencies.editorIntegration ||
+      new EditorIntegration({
+        readBridgeState: dependencies.readBridgeState,
+        updateBridgeState: dependencies.updateBridgeState,
+        canOpenVSWirksEditor: dependencies.canOpenVSWirksEditor
+          ? dependencies.canOpenVSWirksEditor
+          : (
+              dependencies.openInVSWirksEditor ||
+              dependencies.openPathsInVSWirksEditor ||
+              dependencies.openDiffInVSWirksEditor
+            )
+            ? async () => true
+            : undefined,
+        openInVSWirksEditor: dependencies.openInVSWirksEditor,
+        openPathsInVSWirksEditor: dependencies.openPathsInVSWirksEditor,
+        openDiffInVSWirksEditor: dependencies.openDiffInVSWirksEditor
+      });
     this.projects = [];
     this.activeProjectId = "";
     this.bridgeState = {};
@@ -157,7 +167,7 @@ class VSWirksController {
       : this.getActiveThread(project);
     if (!thread) return false;
 
-    const result = await dialog.showSaveDialog(this.win, {
+    const result = await dialog.showSaveDialog(this.window, {
       defaultPath: `${project.name}-${thread.label || "chat"}.json`,
       filters: [{ name: "JSON", extensions: ["json"] }]
     });
@@ -176,14 +186,20 @@ class VSWirksController {
   }
 
   async importConversation() {
-    const result = await dialog.showOpenDialog(this.win, {
+    const result = await dialog.showOpenDialog(this.window, {
       filters: [{ name: "JSON", extensions: ["json"] }],
       properties: ["openFile"]
     });
     if (result.canceled || !result.filePaths.length) return false;
 
-    const raw = await fs.readFile(result.filePaths[0], "utf-8");
-    const data = JSON.parse(raw);
+    let data;
+    try {
+      const raw = await fs.readFile(result.filePaths[0], "utf-8");
+      data = JSON.parse(raw);
+    } catch (err) {
+      this.emitEvent({ type: "error", message: "Invalid JSON file: " + err.message });
+      return false;
+    }
     if (!data || !Array.isArray(data.history)) {
       throw new Error("Invalid conversation export file");
     }
@@ -255,6 +271,10 @@ class VSWirksController {
     if (!project || !project.workspaceRoot) {
       return { ok: false, error: "No project workspace" };
     }
+    const gitDir = path.join(project.workspaceRoot, ".git");
+    if (!require("fs").existsSync(gitDir)) {
+      return { ok: false, error: "Not a git repository" };
+    }
     try {
       const branch = cp.execSync("git rev-parse --abbrev-ref HEAD", {
         cwd: project.workspaceRoot,
@@ -320,7 +340,6 @@ class VSWirksController {
       temperature: 0.7
     });
 
-    const { fetchRuntimeJson } = require("../shared/runtime-client");
     const [resultA, resultB] = await Promise.allSettled([
       fetchRuntimeJson(baseUrl, "/chat/completions", body(modelA)),
       fetchRuntimeJson(baseUrl, "/chat/completions", body(modelB))
@@ -413,9 +432,9 @@ class VSWirksController {
     const cwd = this._gitProjectCwd();
     if (!cwd) return { ok: false, error: "No project workspace" };
     try {
-      const args = file ? `-- ${JSON.stringify(file)}` : "";
-      const staged = cp.execSync(`git diff --cached ${args}`, { cwd, encoding: "utf-8", timeout: 10000 }).slice(0, 20000);
-      const unstaged = cp.execSync(`git diff ${args}`, { cwd, encoding: "utf-8", timeout: 10000 }).slice(0, 20000);
+      const tail = file ? ["--", file] : [];
+      const staged = cp.execFileSync("git", ["diff", "--cached", ...tail], { cwd, encoding: "utf-8", timeout: 10000 }).slice(0, 20000);
+      const unstaged = cp.execFileSync("git", ["diff", ...tail], { cwd, encoding: "utf-8", timeout: 10000 }).slice(0, 20000);
       return { ok: true, staged, unstaged };
     } catch (error) {
       return { ok: false, error: error.message };
@@ -615,10 +634,13 @@ class VSWirksController {
 
     // Fallback: try mlx_stable_diffusion CLI
     try {
-      cp.execSync(
-        `python -m mlx_stable_diffusion.generate --prompt ${JSON.stringify(prompt)} --output ${JSON.stringify(outputFile)} --width ${width} --height ${height}`,
-        { encoding: "utf-8", timeout: 120000 }
-      );
+      cp.execFileSync("python3", [
+        "-m", "mlx_stable_diffusion.generate",
+        "--prompt", prompt,
+        "--output", outputFile,
+        "--width", String(width),
+        "--height", String(height)
+      ], { encoding: "utf-8", timeout: 120000 });
       return { ok: true, path: outputFile };
     } catch (error) {
       return { ok: false, error: `Image generation failed: ${error.message}` };
@@ -717,7 +739,7 @@ class VSWirksController {
 
   async abliterateModel({ modelPath, config = {} } = {}) {
     if (!modelPath) return { ok: false, error: "No model path provided" };
-    const abliteratorDir = "/Users/bluewirks.max/Documents/abliterator-main";
+    const abliteratorDir = (this.settings && this.settings.abliteratorPath) || path.join(os.homedir(), "Documents", "abliterator-main");
     const outputDir = path.join(os.homedir(), ".abliterate", "abliterated_models", path.basename(modelPath) + "-abliterated");
     await fs.mkdir(outputDir, { recursive: true }).catch(() => {});
 
@@ -803,7 +825,7 @@ class VSWirksController {
 
   async evaluateRefusal({ modelPath } = {}) {
     if (!modelPath) return { ok: false, error: "No model path" };
-    const abliteratorDir = "/Users/bluewirks.max/Documents/abliterator-main";
+    const abliteratorDir = (this.settings && this.settings.abliteratorPath) || path.join(os.homedir(), "Documents", "abliterator-main");
     const pythonBin = path.join(abliteratorDir, ".venv", "bin", "python");
     try {
       const output = cp.execFileSync(pythonBin, [
@@ -819,7 +841,7 @@ class VSWirksController {
 
   async exportToGguf({ modelPath, quantType = "Q4_K_M" } = {}) {
     if (!modelPath) return { ok: false, error: "No model path" };
-    const abliteratorDir = "/Users/bluewirks.max/Documents/abliterator-main";
+    const abliteratorDir = (this.settings && this.settings.abliteratorPath) || path.join(os.homedir(), "Documents", "abliterator-main");
     const outputDir = path.join(os.homedir(), ".abliterate", "gguf_exports");
     await fs.mkdir(outputDir, { recursive: true }).catch(() => {});
     const pythonBin = path.join(abliteratorDir, ".venv", "bin", "python");
@@ -871,14 +893,15 @@ class VSWirksController {
     await ensureVSWirksDirs();
     await this.loadSettings();
     await this.loadState();
+    await this.editorIntegration.refreshState();
     await this.loadBridgeState();
     await this.refreshRuntimeState();
-    const project = this.ensureProject();
+    // Don't auto-select a project on startup — let Studio open project-free.
+    // Projects are listed in the sidebar for the user to pick.
+    // A project becomes active when the user clicks one, sends a prompt,
+    // or manually imports an editor workspace.
+    this.activeProjectId = "";
     this.startBridgePolling();
-    if (project) {
-      this.startFileWatcher(project);
-      await this.refreshProjectIntelligence(project, false);
-    }
     await this.persistState();
     this.postState();
   }
@@ -960,10 +983,7 @@ class VSWirksController {
       case "vswirks:openProjectInEditor":
         return this.openProjectInEditor();
       case "vswirks:syncBridge":
-        await this.loadBridgeState();
-        await this.refreshProjectIntelligence(this.getActiveProject(), false);
-        this.postState();
-        return true;
+        return this.syncBridge();
       case "vswirks:exportConversation":
         return this.exportConversation(payload || {});
       case "vswirks:importConversation":
@@ -1072,8 +1092,7 @@ class VSWirksController {
   }
 
   async loadBridgeState() {
-    this.bridgeState = await readBridgeState();
-    this.reconcileBridgeProject();
+    this.bridgeState = await this.editorIntegration.refreshState();
     const applied = await this.applyBridgeHandoffRequest();
     if (applied) {
       await this.persistState();
@@ -1086,14 +1105,13 @@ class VSWirksController {
     }
     let lastSerialized = JSON.stringify(this.bridgeState || {});
     this.bridgePollHandle = setInterval(async () => {
-      const next = await readBridgeState();
+      const next = await this.editorIntegration.refreshState();
       const serialized = JSON.stringify(next || {});
       if (serialized !== lastSerialized) {
         lastSerialized = serialized;
         this.bridgeState = next || {};
-        const adopted = this.reconcileBridgeProject();
         const handedOff = await this.applyBridgeHandoffRequest();
-        if (adopted || handedOff) {
+        if (handedOff) {
           await this.refreshProjectIntelligence(this.getActiveProject(), false);
           await this.persistState();
         }
@@ -1102,31 +1120,82 @@ class VSWirksController {
     }, 1500);
   }
 
+  getStudioProject() {
+    return (
+      (this.projects || []).find((project) => !project.workspaceRoot && !project.targetPath) || null
+    );
+  }
+
   ensureProject() {
-    if (this.projects.length) {
-      return this.getActiveProject();
+    // If an active project is already set, return it
+    const active = this.getActiveProject();
+    if (active) return active;
+
+    const existingStudioProject = this.getStudioProject();
+    if (existingStudioProject) {
+      this.activeProjectId = existingStudioProject.id;
+      return existingStudioProject;
     }
-    const fallbackRoot =
-      typeof this.bridgeState.activeWorkspaceRoot === "string" && this.bridgeState.activeWorkspaceRoot
-        ? this.bridgeState.activeWorkspaceRoot
-        : "";
+
+    // Projects exist but none selected — create a freeform studio chat project
     const project = this.createProjectRecord({
-      name: fallbackRoot ? path.basename(fallbackRoot) : "No Project Selected",
-      workspaceRoot: fallbackRoot,
-      targetPath: fallbackRoot
+      name: "Studio Chat",
+      workspaceRoot: "",
+      targetPath: ""
     });
-    this.projects = [project];
+    this.projects.unshift(project);
     this.activeProjectId = project.id;
     return project;
   }
 
   getActiveProject() {
+    if (!this.activeProjectId) {
+      return null;
+    }
     const existing = this.projects.find((project) => project.id === this.activeProjectId);
     if (existing) {
       return existing;
     }
-    this.activeProjectId = this.projects[0] ? this.projects[0].id : "";
-    return this.projects[0] || null;
+    // ID was set but project no longer exists — clear it
+    this.activeProjectId = "";
+    return null;
+  }
+
+  async syncBridge() {
+    this.bridgeState = await this.editorIntegration.refreshState();
+    const integrationState = this.editorIntegration.describe();
+    if (!integrationState.available) {
+      this.lastStatus = EDITOR_INTEGRATION_UNAVAILABLE;
+      this.postState();
+      return {
+        ok: false,
+        error: EDITOR_INTEGRATION_UNAVAILABLE
+      };
+    }
+
+    const importResult = await this.editorIntegration.getWorkspaceImport();
+    if (!importResult.ok) {
+      this.lastStatus = importResult.error;
+      this.postState();
+      return importResult;
+    }
+
+    const adopted = this.reconcileBridgeProject(this.bridgeState);
+    if (adopted) {
+      const project = this.getActiveProject();
+      this.startFileWatcher(project);
+      await this.refreshProjectIntelligence(project, false);
+      await this.persistState();
+    }
+
+    this.lastStatus = importResult.workspaceRoot
+      ? `Imported editor workspace: ${path.basename(importResult.workspaceRoot)}`
+      : "Editor state synced";
+    this.postState();
+    return {
+      ok: true,
+      projectId: this.activeProjectId || ""
+    };
   }
 
   normalizePromptingState() {
@@ -1183,12 +1252,12 @@ class VSWirksController {
     });
   }
 
-  reconcileBridgeProject() {
-    const bridgeRoot = this.resolveBridgeWorkspaceRoot();
+  reconcileBridgeProject(bridgeState = this.bridgeState) {
+    const bridgeRoot = this.editorIntegration.resolveWorkspaceRoot(bridgeState);
     if (!bridgeRoot) {
       return false;
     }
-    const bridgeTarget = this.resolveBridgeTargetPath(bridgeRoot);
+    const bridgeTarget = this.editorIntegration.resolveTargetPath(bridgeState, bridgeRoot);
 
     const matchingProject = this.projects.find((project) => project.workspaceRoot === bridgeRoot);
     if (matchingProject) {
@@ -1327,50 +1396,6 @@ class VSWirksController {
       : null;
   }
 
-  resolveBridgeWorkspaceRoot() {
-    if (
-      typeof this.bridgeState.activeWorkspaceRoot === "string" &&
-      this.bridgeState.activeWorkspaceRoot
-    ) {
-      return this.bridgeState.activeWorkspaceRoot;
-    }
-    const workspaceRoots = Array.isArray(this.bridgeState.workspaceRoots)
-      ? this.bridgeState.workspaceRoots.filter((item) => typeof item === "string" && item)
-      : [];
-    if (
-      typeof this.bridgeState.workspaceTarget === "string" &&
-      this.bridgeState.workspaceTarget
-    ) {
-      const matchingRoot = workspaceRoots.find((rootPath) =>
-        isPathWithin(rootPath, this.bridgeState.workspaceTarget)
-      );
-      if (matchingRoot) {
-        return matchingRoot;
-      }
-    }
-    if (workspaceRoots.length) {
-      return workspaceRoots[0];
-    }
-    if (
-      typeof this.bridgeState.workspaceTarget === "string" &&
-      this.bridgeState.workspaceTarget
-    ) {
-      return this.bridgeState.workspaceTarget;
-    }
-    return "";
-  }
-
-  resolveBridgeTargetPath(bridgeRoot) {
-    if (
-      typeof this.bridgeState.workspaceTarget === "string" &&
-      this.bridgeState.workspaceTarget &&
-      isPathWithin(bridgeRoot, this.bridgeState.workspaceTarget)
-    ) {
-      return this.bridgeState.workspaceTarget;
-    }
-    return bridgeRoot;
-  }
-
   getAgentProfileById(agentProfileId) {
     return (
       (this.settings.agentProfiles || []).find((profile) => profile.id === agentProfileId) || null
@@ -1394,20 +1419,19 @@ class VSWirksController {
     const workspaceRoot =
       typeof request.workspaceRoot === "string" && request.workspaceRoot.trim()
         ? request.workspaceRoot.trim()
-        : this.resolveBridgeWorkspaceRoot();
+        : this.editorIntegration.resolveWorkspaceRoot(this.bridgeState);
     const targetPath =
       typeof request.targetPath === "string" && request.targetPath.trim()
         ? request.targetPath.trim()
         : workspaceRoot;
     if (!workspaceRoot || !prompt) {
-      await this.dependencies.updateBridgeState({
-        appHandoffRequest: {
-          ...(request || {}),
-          appliedAt: Date.now(),
-          appliedBy: "VSWirks App",
-          error: "Missing workspace root or prompt for handoff."
-        }
+      await this.editorIntegration.acknowledgeHandoff({
+        ...(request || {}),
+        appliedAt: Date.now(),
+        appliedBy: "VSWirks App",
+        error: "Missing workspace root or prompt for handoff."
       });
+      this.bridgeState = this.editorIntegration.getBridgeState();
       return false;
     }
 
@@ -1453,7 +1477,7 @@ class VSWirksController {
           id: makeId("assistant"),
           role: "assistant",
           content:
-            "Seeded from VSWirks Editor handoff.\n\n" +
+            "Seeded from editor handoff.\n\n" +
             attachmentSummary.map((item) => `- ${item}`).join("\n"),
           model: "",
           mode: "chat",
@@ -1465,7 +1489,7 @@ class VSWirksController {
       touchThread(project.threads, thread.id);
     }
 
-    this.lastStatus = "Editor handoff ready in VSWirks App";
+    this.lastStatus = "Editor handoff ready";
     if (this.window && !this.window.isDestroyed()) {
       this.window.show();
       this.window.focus();
@@ -1479,13 +1503,8 @@ class VSWirksController {
       seededThreadId: thread ? thread.id : "",
       error: ""
     };
-    await this.dependencies.updateBridgeState({
-      appHandoffRequest: nextRequest
-    });
-    this.bridgeState = {
-      ...this.bridgeState,
-      appHandoffRequest: nextRequest
-    };
+    await this.editorIntegration.acknowledgeHandoff(nextRequest);
+    this.bridgeState = this.editorIntegration.getBridgeState();
     return true;
   }
 
@@ -1502,6 +1521,7 @@ class VSWirksController {
       await this.refreshProjectIntelligence(existing, false);
       await this.persistState();
       await this.publishEditorSelection(existing);
+      await this.syncEditorToProject(existing);
       this.postState();
       return true;
     }
@@ -1571,54 +1591,15 @@ class VSWirksController {
   }
 
   async publishEditorSelection(project = this.getActiveProject()) {
-    if (!project || !project.workspaceRoot) {
-      return false;
-    }
-
-    const workspaceRoot = project.workspaceRoot;
-    const targetPath =
-      project.targetPath && isPathWithin(workspaceRoot, project.targetPath)
-        ? project.targetPath
-        : workspaceRoot;
-    const requestedAt = Date.now();
-
-    await this.dependencies.updateBridgeState({
-      appSelectedProjectId: project.id,
-      appSelectedWorkspaceRoot: workspaceRoot,
-      appSelectedTargetPath: targetPath,
-      appSelectionRequestedAt: requestedAt,
-      appSelectionRequestedBy: "VSWirks App"
-    });
-
-    this.bridgeState = {
-      ...this.bridgeState,
-      appSelectedProjectId: project.id,
-      appSelectedWorkspaceRoot: workspaceRoot,
-      appSelectedTargetPath: targetPath,
-      appSelectionRequestedAt: requestedAt,
-      appSelectionRequestedBy: "VSWirks App"
-    };
-    return true;
+    const result = await this.editorIntegration.publishSelection(project);
+    this.bridgeState = this.editorIntegration.getBridgeState();
+    return Boolean(result && result.ok);
   }
 
   async publishEditorAction(action) {
-    await this.dependencies.updateBridgeState({
-      editorActionRequest: {
-        ...(action || {}),
-        requestedAt: Date.now(),
-        requestedBy: "VSWirks App"
-      }
-    });
-    this.bridgeState = {
-      ...this.bridgeState,
-      editorActionRequest: {
-        ...(action || {}),
-        requestedAt: Date.now(),
-        requestedBy: "VSWirks App"
-      }
-    };
-    await this.applyEditorActionLocally(action);
-    return true;
+    const result = await this.editorIntegration.publishAction(action);
+    this.bridgeState = this.editorIntegration.getBridgeState();
+    return result && result.ok ? true : result;
   }
 
   async syncEditorToProject(project = this.getActiveProject()) {
@@ -1631,54 +1612,31 @@ class VSWirksController {
         : project.workspaceRoot;
 
     if (await exists(project.workspaceRoot)) {
-      await this.dependencies.openInVSWirksEditor(project.workspaceRoot);
-      return true;
+      const result = await this.editorIntegration.openPath(project.workspaceRoot);
+      return result && result.ok ? true : result;
     }
     if (await exists(targetPath)) {
-      await this.dependencies.openInVSWirksEditor(targetPath);
-      return true;
+      const result = await this.editorIntegration.openPath(targetPath);
+      return result && result.ok ? true : result;
     }
     return false;
   }
 
   async applyEditorActionLocally(action) {
-    if (!action || typeof action !== "object") {
-      return false;
-    }
-
-    if (action.type === "openChangedFiles") {
-      const paths = Array.isArray(action.paths)
-        ? action.paths.filter((item) => typeof item === "string" && item.trim())
-        : [];
-      if (paths.length) {
-        await this.dependencies.openPathsInVSWirksEditor(paths);
-        return true;
-      }
-      return false;
-    }
-
-    if (action.type === "openDiff" && action.leftPath && action.rightPath) {
-      await this.dependencies.openDiffInVSWirksEditor(
-        action.leftPath,
-        action.rightPath,
-        action.label || "VSWirks Diff"
-      );
-      return true;
-    }
-
-    if (action.type === "revealPath" && typeof action.path === "string" && action.path) {
-      await this.dependencies.openInVSWirksEditor(action.path);
-      return true;
-    }
-
-    return false;
+    const result = await this.editorIntegration.applyLocalAction(action);
+    return result && result.ok ? true : result;
   }
 
   async newChat(payload = {}) {
-    const project = this.getActiveProject();
-    if (!project || this.abortController) {
+    if (this.abortController) {
       return false;
     }
+    if (payload && payload.studioChat) {
+      const studioProject = this.getStudioProject() || this.ensureProject();
+      this.activeProjectId = studioProject.id;
+      this.stopFileWatcher();
+    }
+    const project = this.getActiveProject() || this.ensureProject();
     const workflowPresetId =
       typeof payload.workflowPresetId === "string" && payload.workflowPresetId
         ? payload.workflowPresetId
@@ -1881,21 +1839,24 @@ class VSWirksController {
     if (!project) {
       return false;
     }
-    const selectionText =
-      typeof this.bridgeState.selectionText === "string" ? this.bridgeState.selectionText.trim() : "";
-    if (!selectionText) {
+    const integrationState = this.editorIntegration.describe();
+    if (!integrationState.available) {
+      return {
+        ok: false,
+        error: EDITOR_INTEGRATION_UNAVAILABLE
+      };
+    }
+    const attachmentResult = await this.editorIntegration.buildSelectionAttachment(project.workspaceRoot);
+    if (!attachmentResult.ok) {
       this.emitEvent({
         type: "error",
-        message: "No editor selection is currently published from VSWirks Editor."
+        message: attachmentResult.error
       });
       return false;
     }
     project.pendingAttachments.push({
       id: makeId("attachment"),
-      kind: "selection",
-      label: this.bridgeState.selectionLabel || this.bridgeState.activeFileLabel || "Editor selection",
-      languageId: this.bridgeState.activeLanguageId || "",
-      content: selectionText
+      ...attachmentResult.attachment
     });
     this.lastStatus = "Editor selection attached";
     await this.persistState();
@@ -2167,7 +2128,13 @@ class VSWirksController {
     if (this.abortController) {
       return false;
     }
-    const project = this.getActiveProject();
+    // Lazily create a freeform project if none exists (Studio chat without project)
+    let project = this.getActiveProject();
+    if (!project) {
+      project = this.ensureProject();
+      await this.persistState();
+      this.postState();
+    }
     const thread = this.getActiveThread(project);
     const prompt = typeof payload.prompt === "string" ? payload.prompt.trim() : "";
     if (!project || !thread || !prompt) {
@@ -2241,8 +2208,10 @@ class VSWirksController {
     });
     this.attachRunToProject(project, thread, runRecord);
 
+    const studioChatMode = payload.studioChatMode || (payload.studioMode ? "chat" : null);
     const shouldBuildSpec =
       !useActiveSpec &&
+      studioChatMode !== "chat" &&
       shouldBuildSpecForRequest({
         workflowPreset,
         mode,
@@ -2333,27 +2302,20 @@ class VSWirksController {
       this.lastStatus = executionMode === "act" ? "Running workflow" : "Planning";
       this.postState();
 
-      runRecord.resolvedSystemPrompt = await buildWorkspaceSystemPrompt(
-        project.targetPath || project.workspaceRoot,
-        {
-          workflowPreset,
-          specDraft,
-          intelligence: project.intelligence,
-          globalSystemPrompt: promptConfig.globalSystemPrompt,
-          agentProfile: promptConfig.agentProfile,
-          threadSystemPrompt: promptConfig.threadSystemPrompt
-        }
-      );
+      // Route system prompt + model based on Studio mode dropdown
+      let chatModel = promptConfig.resolvedModel;
+      const userPickedModel = typeof payload.model === "string" && payload.model.trim() && payload.model.trim() !== "__auto__";
 
-      // Studio mode: prepend developer-companion system prompt
-      if (payload.studioMode) {
-        const directives = [];
+      if (studioChatMode === "chat") {
+        // Chat: lightweight conversational prompt + llama3.1
+        const directives = [
+          "You are VSWirks Studio, a developer's local AI companion.",
+          "Be conversational, helpful, and developer-casual.",
+          "Give real answers, not filler. Be direct.",
+          "Do NOT respond with implementation plans, specs, or structured project templates.",
+          "Just have a natural conversation. If the user says hello, say hello back."
+        ];
         const features = Array.isArray(payload.studioFeatures) ? payload.studioFeatures : [];
-        directives.push(
-          "You are a developer's local-first AI companion called VSWirks Studio.",
-          "Be conversational, practical, and developer-casual in tone.",
-          "Give real answers, not filler. Be direct."
-        );
         if (features.includes("deep-research")) {
           directives.push("Provide thorough, deeply researched answers with references and rationale.");
         }
@@ -2363,7 +2325,35 @@ class VSWirksController {
         if (features.includes("quick-response")) {
           directives.push("Keep your answer concise and actionable -- aim for brief practical guidance.");
         }
-        runRecord.resolvedSystemPrompt = directives.join(" ") + "\n\n" + (runRecord.resolvedSystemPrompt || "");
+        runRecord.resolvedSystemPrompt = directives.join(" ");
+        chatModel = userPickedModel ? payload.model.trim() : "llama3.1:8b";
+      } else if (studioChatMode === "plan" || studioChatMode === "act") {
+        // Plan/Act: full workspace system prompt + qwen-coder
+        runRecord.resolvedSystemPrompt = await buildWorkspaceSystemPrompt(
+          project.targetPath || project.workspaceRoot,
+          {
+            workflowPreset,
+            specDraft,
+            intelligence: project.intelligence,
+            globalSystemPrompt: promptConfig.globalSystemPrompt,
+            agentProfile: promptConfig.agentProfile,
+            threadSystemPrompt: promptConfig.threadSystemPrompt
+          }
+        );
+        chatModel = userPickedModel ? payload.model.trim() : "qwen2.5-coder:14b-instruct";
+      } else {
+        // Non-Studio (Projects tab): existing behavior unchanged
+        runRecord.resolvedSystemPrompt = await buildWorkspaceSystemPrompt(
+          project.targetPath || project.workspaceRoot,
+          {
+            workflowPreset,
+            specDraft,
+            intelligence: project.intelligence,
+            globalSystemPrompt: promptConfig.globalSystemPrompt,
+            agentProfile: promptConfig.agentProfile,
+            threadSystemPrompt: promptConfig.threadSystemPrompt
+          }
+        );
       }
 
       await this.dependencies.runConversation({
@@ -2372,7 +2362,7 @@ class VSWirksController {
         prompt,
         mode,
         executionMode,
-        model: promptConfig.resolvedModel,
+        model: chatModel,
         modelSelection: promptConfig.requestedModel,
         attachments: [...project.pendingAttachments],
         generationSettings: this.settings.generationSettings,
@@ -2818,14 +2808,23 @@ class VSWirksController {
     if (!project || !run || !run.changedFiles.length) {
       return false;
     }
+    if (!(await this.editorIntegration.ensureCanOpenEditor())) {
+      return {
+        ok: false,
+        error: EDITOR_INTEGRATION_UNAVAILABLE
+      };
+    }
     const absolute = run.changedFiles.map((item) => path.join(project.workspaceRoot, item));
-    await this.publishEditorAction({
+    const result = await this.publishEditorAction({
       type: "openChangedFiles",
       workspaceRoot: project.workspaceRoot,
       targetPath: project.targetPath || project.workspaceRoot,
       paths: absolute
     });
-    this.lastStatus = `Revealed ${run.changedFiles.length} file${run.changedFiles.length === 1 ? "" : "s"} in VSWirks Editor`;
+    if (result && result.ok === false) {
+      return result;
+    }
+    this.lastStatus = `Revealed ${run.changedFiles.length} file${run.changedFiles.length === 1 ? "" : "s"} in the editor`;
     this.postState();
     return true;
   }
@@ -2845,12 +2844,21 @@ class VSWirksController {
     const leftPath =
       backupPath ||
       (await createEmptyDiffBaseFile(`vswirks-diff-${event.path.replace(/[\\/]/g, "__")}`));
-    await this.publishEditorAction({
+    if (!(await this.editorIntegration.ensureCanOpenEditor())) {
+      return {
+        ok: false,
+        error: EDITOR_INTEGRATION_UNAVAILABLE
+      };
+    }
+    const result = await this.publishEditorAction({
       type: "openDiff",
       leftPath,
       rightPath: currentPath,
       label: `VSWirks Diff: ${event.path}`
     });
+    if (result && result.ok === false) {
+      return result;
+    }
     this.lastStatus = `Opened diff for ${event.path}`;
     this.postState();
     return true;
@@ -3031,8 +3039,8 @@ class VSWirksController {
     if (!filePath) {
       return false;
     }
-    await this.dependencies.openInVSWirksEditor(filePath);
-    return true;
+    const result = await this.editorIntegration.openPath(filePath);
+    return result && result.ok ? true : result;
   }
 
   async openProjectInEditor() {
@@ -3042,8 +3050,11 @@ class VSWirksController {
     }
     const revealPath = project.targetPath || project.workspaceRoot;
     if (await exists(revealPath)) {
-      await this.dependencies.openInVSWirksEditor(revealPath);
-      this.lastStatus = `Revealed in VSWirks Editor: ${formatWorkspaceLabel(
+      const result = await this.editorIntegration.openPath(revealPath);
+      if (result && result.ok === false) {
+        return result;
+      }
+      this.lastStatus = `Revealed in editor: ${formatWorkspaceLabel(
         project.workspaceRoot,
         revealPath
       )}`;
@@ -3244,16 +3255,13 @@ class VSWirksController {
     if (!this.window || this.window.isDestroyed()) {
       return;
     }
+    const editorIntegration = this.editorIntegration.describe();
     const activeProject = this.getActiveProject();
     const activeThread = this.getActiveThread(activeProject);
     const activeRun = this.getActiveRun(activeProject);
     const activeSpec =
       (activeProject && this.getSpecById(activeProject, activeProject.activeSpecId)) ||
       (activeThread && this.getSpecById(activeProject, activeThread.specDraftId));
-    const bridgeWorkspaceRoot =
-      typeof this.bridgeState.activeWorkspaceRoot === "string"
-        ? this.bridgeState.activeWorkspaceRoot
-        : "";
 
     this.window.webContents.send("vswirks:state", {
       projects: this.projects.map((project) => ({
@@ -3332,25 +3340,17 @@ class VSWirksController {
           }
         : null,
       bridge: {
-        activeWorkspaceRoot: bridgeWorkspaceRoot,
-        activeWorkspaceLabel: bridgeWorkspaceRoot ? path.basename(bridgeWorkspaceRoot) : "",
-        activeFileLabel: this.bridgeState.activeFileLabel || "",
-        selectionLabel: this.bridgeState.selectionLabel || "",
-        targetLabel:
-          typeof this.bridgeState.workspaceTarget === "string" && this.bridgeState.workspaceTarget
-            ? path.basename(this.bridgeState.workspaceTarget)
-            : "",
-        selectedExplorerPath:
-          typeof this.bridgeState.selectedExplorerPath === "string"
-            ? this.bridgeState.selectedExplorerPath
-            : "",
-        activeSelection:
-          this.bridgeState.activeSelection && typeof this.bridgeState.activeSelection === "object"
-            ? this.bridgeState.activeSelection
-            : null,
-        connected:
-          Number(this.bridgeState.updatedAt) > Date.now() - 120000 &&
-          Boolean(this.bridgeState.editorName)
+        activeWorkspaceRoot: editorIntegration.activeWorkspaceRoot,
+        activeWorkspaceLabel: editorIntegration.activeWorkspaceLabel,
+        activeFileLabel: editorIntegration.activeFileLabel,
+        selectionLabel: editorIntegration.selectionLabel,
+        targetLabel: editorIntegration.targetLabel,
+        selectedExplorerPath: editorIntegration.selectedExplorerPath,
+        activeSelection: editorIntegration.activeSelection,
+        connected: editorIntegration.connected
+      },
+      integrations: {
+        editor: editorIntegration
       },
       models: this.models,
       serviceLabel: this.serviceState.label,

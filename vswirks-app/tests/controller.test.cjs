@@ -1,5 +1,6 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
+const http = require("node:http");
 const fs = require("node:fs/promises");
 const os = require("node:os");
 const path = require("node:path");
@@ -36,6 +37,27 @@ function createController(options = {}) {
     controller._events = [...(controller._events || []), payload];
   };
   return controller;
+}
+
+async function withRuntimeServer(handler, run) {
+  const server = http.createServer(handler);
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  const baseUrl = `http://127.0.0.1:${address.port}/v1`;
+
+  try {
+    await run(baseUrl);
+  } finally {
+    await new Promise((resolve, reject) => {
+      server.close((error) => {
+        if (error) {
+          reject(error);
+          return;
+        }
+        resolve();
+      });
+    });
+  }
 }
 
 test("reconcileBridgeProject adopts the bridge workspace into an empty project", () => {
@@ -112,6 +134,46 @@ test("reconcileBridgeProject creates a project for a new bridge workspace", () =
   assert.equal(project.workspaceRoot, "/tmp/fresh");
   assert.equal(project.targetPath, "/tmp/fresh");
   assert.equal(controller.projects.some((entry) => entry.workspaceRoot === "/tmp/fresh"), true);
+});
+
+test("newChat creates or activates Studio Chat when no project is active", async () => {
+  const controller = createController();
+
+  const ok = await controller.newChat({
+    mode: "chat",
+    executionMode: "plan",
+    studioChat: true
+  });
+
+  const project = controller.getActiveProject();
+  const thread = controller.getActiveThread(project);
+
+  assert.equal(ok, true);
+  assert.equal(project.name, "Studio Chat");
+  assert.equal(project.workspaceRoot, "");
+  assert.equal(thread.mode, "chat");
+  assert.equal(thread.executionMode, "plan");
+});
+
+test("syncBridge imports an editor workspace only when explicitly requested", async () => {
+  const controller = createController({
+    dependencies: {
+      readBridgeState: async () => ({
+        activeWorkspaceRoot: "/tmp/manual-editor",
+        workspaceTarget: "/tmp/manual-editor/apps/web",
+        updatedAt: Date.now(),
+        editorName: "Optional Editor"
+      }),
+      canOpenVSWirksEditor: async () => false
+    }
+  });
+
+  const result = await controller.syncBridge();
+  const project = controller.getActiveProject();
+
+  assert.deepEqual(result, { ok: true, projectId: project.id });
+  assert.equal(project.workspaceRoot, "/tmp/manual-editor");
+  assert.equal(project.targetPath, "/tmp/manual-editor/apps/web");
 });
 
 test("switchProject refreshes intelligence and syncs editor state for the selected project", async () => {
@@ -232,8 +294,35 @@ test("applyEditorActionLocally forwards openDiff actions to the editor dependenc
   assert.deepEqual(calls, [["/tmp/old.js", "/tmp/new.js", "VSWirks Diff"]]);
 });
 
+test("attachEditorSelection returns a structured unavailable error when the integration is absent", async () => {
+  const controller = createController({
+    dependencies: {
+      canOpenVSWirksEditor: async () => false,
+      readBridgeState: async () => ({})
+    }
+  });
+  const project = createProjectSession({
+    name: "repo",
+    workspaceRoot: "/tmp/repo",
+    targetPath: "/tmp/repo"
+  });
+  controller.projects = [project];
+  controller.activeProjectId = project.id;
+
+  const result = await controller.attachEditorSelection();
+
+  assert.deepEqual(result, {
+    ok: false,
+    error: "Editor integration unavailable"
+  });
+});
+
 test("openRunDiff publishes a real diff action when a backup exists", async () => {
-  const controller = createController();
+  const controller = createController({
+    dependencies: {
+      canOpenVSWirksEditor: async () => true
+    }
+  });
   const project = createProjectSession({
     name: "repo",
     workspaceRoot: "/tmp/repo",
@@ -423,6 +512,94 @@ test("sendPrompt can reuse an existing spec without regenerating it", async () =
   assert.equal(captured.specDraft.id, spec.id);
 });
 
+test("sendPrompt accepts a compatible backend that only exposes /v1/models for readiness", async () => {
+  let captured = null;
+  const controller = createController({
+    dependencies: {
+      runConversation: async (payload) => {
+        captured = payload;
+      }
+    }
+  });
+  const project = createProjectSession({
+    name: "Studio Chat",
+    workspaceRoot: "",
+    targetPath: ""
+  });
+  controller.projects = [project];
+  controller.activeProjectId = project.id;
+  controller.serviceState = { healthy: false, starting: false, label: "Service offline" };
+  controller.refreshProjectIntelligence = async () => null;
+  controller.finalizeValidationIfNeeded = async () => {};
+  controller.revealRunOutputs = async () => {};
+
+  await withRuntimeServer((request, response) => {
+    if (request.url === "/health" || request.url === "/healthz") {
+      response.statusCode = 404;
+      response.end("missing");
+      return;
+    }
+    if (request.url === "/v1/models") {
+      response.setHeader("Content-Type", "application/json");
+      response.end(JSON.stringify({ object: "list", data: [{ id: "llama3.1:8b" }] }));
+      return;
+    }
+    if (request.url === "/v1/chat/completions") {
+      response.setHeader("Content-Type", "application/json");
+      response.end(JSON.stringify({ choices: [{ message: { content: "Hi!" } }] }));
+      return;
+    }
+    response.statusCode = 404;
+    response.end("not found");
+  }, async (baseUrl) => {
+    controller.settings.runtimeBaseUrl = baseUrl;
+
+    const ok = await controller.sendPrompt({
+      prompt: "hello",
+      mode: "chat",
+      executionMode: "plan",
+      studioChatMode: "chat"
+    });
+
+    assert.equal(ok, true);
+    assert.equal(controller.serviceState.healthy, true);
+    assert.equal(controller.serviceState.label, "Service ready");
+    assert.ok(captured);
+    assert.notEqual(project.currentRunStatus, "Runtime offline");
+  });
+});
+
+test("startRuntimeService short-circuits when a compatible backend is already listening", async () => {
+  const controller = createController();
+  controller.settings.runtimePython = "/definitely/missing/python";
+  controller.settings.runtimeCwd = "/definitely/missing/cwd";
+
+  await withRuntimeServer((request, response) => {
+    if (request.url === "/health" || request.url === "/healthz") {
+      response.statusCode = 404;
+      response.end("missing");
+      return;
+    }
+    if (request.url === "/v1/models") {
+      response.setHeader("Content-Type", "application/json");
+      response.end(JSON.stringify({ object: "list", data: [{ id: "devstral-small-2" }] }));
+      return;
+    }
+    response.statusCode = 404;
+    response.end("not found");
+  }, async (baseUrl) => {
+    controller.settings.runtimeBaseUrl = baseUrl;
+
+    const ok = await controller.startRuntimeService();
+
+    assert.equal(ok, true);
+    assert.equal(controller.serviceState.healthy, true);
+    assert.equal(controller.serviceState.starting, false);
+    assert.equal(controller.serviceState.label, "Service ready");
+    assert.equal(controller.lastStatus, "ai-runtime already running");
+  });
+});
+
 test("applyBridgeHandoffRequest seeds a chat from the editor handoff contract", async () => {
   let bridgePatch = null;
   const controller = createController({
@@ -456,7 +633,7 @@ test("applyBridgeHandoffRequest seeds a chat from the editor handoff contract", 
   assert.equal(project.targetPath, "/tmp/vswirks-handoff/apps/web");
   assert.equal(thread.agentProfileId, "review-analyst");
   assert.equal(thread.draftPrompt, "Review this repo end to end.");
-  assert.match(thread.messages[0].content, /Seeded from VSWirks Editor handoff/);
+  assert.match(thread.messages[0].content, /Seeded from editor handoff/);
   assert.equal(
     bridgePatch.appHandoffRequest.requestedWorkflowId,
     "review-repo"

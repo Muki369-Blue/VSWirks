@@ -10,6 +10,7 @@ const {
 const RUNTIME_JSON_REQUEST_TIMEOUT_MS = 15 * 60 * 1000;
 const TRANSIENT_RETRY_MAX = 3;
 const TRANSIENT_RETRY_BASE_MS = 800;
+const RUNTIME_PROBE_TIMEOUT_MS = 5000;
 
 function normalizeBaseUrl(baseUrl) {
   const normalized = String(baseUrl || DEFAULT_RUNTIME_BASE_URL).trim();
@@ -249,27 +250,62 @@ async function streamRuntimeChat(baseUrl, body, signal, handlers = {}) {
   }
 }
 
-async function probeRuntimeHealth(baseUrl) {
+async function fetchRuntimeProbe(baseUrl, endpoint, { parseJson = false } = {}) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), RUNTIME_PROBE_TIMEOUT_MS);
+
   try {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 5000);
-    const response = await fetch(`${getRuntimeServiceUrl(baseUrl)}/health`, {
+    const response = await fetch(`${baseUrl}${endpoint}`, {
       signal: controller.signal
     });
-    clearTimeout(timeout);
     if (!response.ok) {
-      throw new Error(`${response.status} ${response.statusText}`);
+      return null;
     }
+    if (!parseJson) {
+      return true;
+    }
+    return safeJsonParse(await response.text(), null);
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+function isOpenAiCompatibleModelList(payload) {
+  return Boolean(
+    payload &&
+      typeof payload === "object" &&
+      Array.isArray(payload.data)
+  );
+}
+
+async function probeRuntimeHealth(baseUrl) {
+  const serviceUrl = getRuntimeServiceUrl(baseUrl);
+  for (const endpoint of ["/health", "/healthz"]) {
+    const healthy = await fetchRuntimeProbe(serviceUrl, endpoint);
+    if (healthy) {
+      return {
+        healthy: true,
+        label: "Service ready"
+      };
+    }
+  }
+
+  const modelsPayload = await fetchRuntimeProbe(serviceUrl, "/v1/models", {
+    parseJson: true
+  });
+  if (isOpenAiCompatibleModelList(modelsPayload)) {
     return {
       healthy: true,
       label: "Service ready"
     };
-  } catch {
-    return {
-      healthy: false,
-      label: "Service offline"
-    };
   }
+
+  return {
+    healthy: false,
+    label: "Service offline"
+  };
 }
 
 async function waitForRuntimeHealthy(baseUrl, timeoutMs) {

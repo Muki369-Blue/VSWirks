@@ -184,6 +184,8 @@
     studioClearProject: document.getElementById("studioClearProject"),
     studioExport: document.getElementById("studioExport"),
     studioImport: document.getElementById("studioImport"),
+    studioModelSelect: document.getElementById("studioModel"),
+    studioChatModeSelect: document.getElementById("studioChatMode"),
     studioTemplateSelect: document.getElementById("studioTemplateSelect"),
     studioGitPanel: document.getElementById("studioGitPanel"),
     studioRefreshGit: document.getElementById("studioRefreshGit"),
@@ -229,6 +231,7 @@
     focusChat: document.getElementById("focusChat"),
     startService: document.getElementById("startService"),
     serviceStatus: document.getElementById("serviceStatus"),
+    bridgeStrip: document.querySelector(".bridge-strip"),
     projectWorkspace: document.getElementById("projectWorkspace"),
     bridgeWorkspace: document.getElementById("bridgeWorkspace"),
     bridgeFile: document.getElementById("bridgeFile"),
@@ -336,6 +339,16 @@
     activeProjectId: "",
     activeProject: null,
     bridge: {},
+    integrations: {
+      editor: {
+        available: false,
+        connected: false,
+        selectionAvailable: false,
+        mode: "manual",
+        canOpen: false,
+        statePath: ""
+      }
+    },
     models: [],
     serviceHealthy: false,
     serviceStarting: false,
@@ -365,6 +378,23 @@
     statusText: "Ready",
     pendingApproval: null
   };
+
+  function getEditorIntegration() {
+    return state.integrations && state.integrations.editor
+      ? state.integrations.editor
+      : {
+          available: false,
+          connected: false,
+          selectionAvailable: false,
+          mode: "manual",
+          canOpen: false,
+          statePath: ""
+        };
+  }
+
+  function canOpenEditorIntegration() {
+    return Boolean(getEditorIntegration().canOpen);
+  }
 
   const oneShotOverrides = {
     model: "",
@@ -573,6 +603,40 @@
       header.className = "message-header";
       header.textContent = item.role === "user" ? "You" : "Studio";
       card.appendChild(header);
+      // ── Thinking block (reasoning models) ──
+      if (item.role === "assistant" && item.thinking) {
+        const thinkWrap = document.createElement("div");
+        if (item.pending && !item.thinkingComplete) {
+          // Live thinking — show expanded with animation
+          thinkWrap.className = "thinking-block thinking-live";
+          const thinkLabel = document.createElement("div");
+          thinkLabel.className = "thinking-label";
+          thinkLabel.innerHTML = '<span class="thinking-spinner"></span> Thinking…';
+          thinkWrap.appendChild(thinkLabel);
+          const thinkBody = document.createElement("div");
+          thinkBody.className = "thinking-body";
+          thinkBody.textContent = item.thinking;
+          thinkWrap.appendChild(thinkBody);
+        } else {
+          // Completed thinking — collapsed dropdown
+          thinkWrap.className = "thinking-block thinking-done";
+          const toggle = document.createElement("button");
+          toggle.className = "thinking-toggle ghost-button compact-button";
+          toggle.textContent = "💭 Show reasoning";
+          const thinkBody = document.createElement("div");
+          thinkBody.className = "thinking-body collapsed";
+          thinkBody.textContent = item.thinking;
+          toggle.addEventListener("click", () => {
+            const isCollapsed = thinkBody.classList.contains("collapsed");
+            thinkBody.classList.toggle("collapsed");
+            toggle.textContent = isCollapsed ? "💭 Hide reasoning" : "💭 Show reasoning";
+          });
+          thinkWrap.appendChild(toggle);
+          thinkWrap.appendChild(thinkBody);
+        }
+        card.appendChild(thinkWrap);
+      }
+
       const body = document.createElement("div");
       body.className = "message-body";
       if (item.role === "assistant") {
@@ -641,9 +705,9 @@
 
     // Project context banner
     const active = state.activeProject;
-    if (active) {
+    if (active && active.workspaceRoot) {
       elements.studioProjectContext.style.display = "";
-      elements.studioProjectLabel.textContent = `Chatting about: ${active.name}`;
+      elements.studioProjectLabel.textContent = `Working in: ${active.name}`;
       elements.studioPrompt.placeholder = `Ask about ${active.name}…`;
       refreshGitPanel();
     } else {
@@ -801,6 +865,17 @@
       elements.studioModelPanel.innerHTML = '<span class="meta">No models found</span>';
       return;
     }
+    // Populate Studio model dropdown
+    const prev = elements.studioModelSelect.value;
+    elements.studioModelSelect.innerHTML = '<option value="">Auto (llama3.1:8b)</option>';
+    models.forEach((m) => {
+      const opt = document.createElement("option");
+      opt.value = m.name;
+      opt.textContent = m.name;
+      elements.studioModelSelect.appendChild(opt);
+    });
+    if (prev) elements.studioModelSelect.value = prev;
+
     elements.studioModelPanel.innerHTML = "";
     models.forEach((m) => {
       const row = document.createElement("div");
@@ -1013,14 +1088,21 @@
     if (studioFeatures.webTools) features.push("web-tools");
     if (studioFeatures.quickResponse) features.push("quick-response");
 
-    void api.invoke("vswirks:sendPrompt", {
+    const studioModel = elements.studioModelSelect.value || "";
+    const studioChatMode = elements.studioChatModeSelect.value || "chat";
+    const mode = studioChatMode === "act" ? "agent" : "chat";
+    const executionMode = studioChatMode === "act" ? "act" : "plan";
+    const studioMode = studioChatMode === "chat";
+
+    api.invoke("vswirks:sendPrompt", {
       prompt,
-      mode: "chat",
-      executionMode: "plan",
+      mode,
+      executionMode,
       workflowPresetId: "freeform",
       agentProfileId: "",
-      model: getRequestedModel(),
-      studioMode: true,
+      model: studioModel,
+      studioMode,
+      studioChatMode,
       studioFeatures: features
     });
     elements.studioPrompt.value = "";
@@ -1377,24 +1459,30 @@
   }
 
   function renderBridge() {
+    const editor = getEditorIntegration();
     elements.projectWorkspace.textContent = state.activeProject
       ? state.activeProject.workspaceLabel || "No workspace"
       : "No project";
+    elements.bridgeStrip.classList.toggle("hidden", !editor.available);
 
-    const connected = state.bridge && state.bridge.connected;
-    elements.bridgeWorkspace.textContent = connected
-      ? `Editor: ${state.bridge.activeWorkspaceLabel || "connected"}`
-      : "Editor not connected";
+    elements.bridgeWorkspace.textContent = editor.connected
+      ? `Editor: ${editor.activeWorkspaceLabel || "connected"}`
+      : editor.activeWorkspaceRoot
+        ? `Editor snapshot: ${editor.activeWorkspaceLabel}`
+      : editor.canOpen
+        ? "Optional editor available"
+        : "Editor integration unavailable";
+    elements.syncBridge.disabled = state.pending || !editor.activeWorkspaceRoot;
 
     togglePill(
       elements.bridgeFile,
-      Boolean(state.bridge && state.bridge.activeFileLabel),
-      state.bridge.activeFileLabel || ""
+      Boolean(editor.activeFileLabel),
+      editor.activeFileLabel || ""
     );
     togglePill(
       elements.bridgeSelection,
-      Boolean(state.bridge && state.bridge.selectionLabel),
-      state.bridge.selectionLabel || ""
+      Boolean(editor.selectionLabel),
+      editor.selectionLabel || ""
     );
 
     elements.contextProjectRoot.textContent =
@@ -1406,8 +1494,8 @@
         ? state.activeProject.targetPath
         : "None";
     elements.contextEditorFile.textContent =
-      state.bridge && state.bridge.activeFileLabel ? state.bridge.activeFileLabel : "None";
-    elements.contextBridgePath.textContent = "VSWirks bridge store";
+      editor.activeFileLabel ? editor.activeFileLabel : "None";
+    elements.contextBridgePath.textContent = editor.statePath || "Unavailable";
   }
 
   function togglePill(element, visible, text) {
@@ -1439,7 +1527,7 @@
       const empty = document.createElement("div");
       empty.className = "message-card assistant";
       empty.innerHTML =
-        "<strong>Run local agent work without leaving the editor loop.</strong><p>Use Plan to shape a spec, then switch to Act when you want VSWirks App to propose patches, write files, validate results, and sync back into VSWirks Editor.</p>";
+        "<strong>Run local agent work from the desktop app.</strong><p>Use Plan to shape a spec, then switch to Act when you want VSWirks App to propose patches, write files, and validate the result locally.</p>";
       elements.messages.appendChild(empty);
       return;
     }
@@ -1500,11 +1588,13 @@
               api.invoke("vswirks:reviewGeneratedFiles", { runId: activeRun.id })
             )
           );
-          actions.appendChild(
-            createTextButton("Reveal In Editor", () =>
-              api.invoke("vswirks:revealRunFiles", { runId: activeRun.id })
-            )
-          );
+          if (canOpenEditorIntegration()) {
+            actions.appendChild(
+              createTextButton("Reveal In Editor", () =>
+                api.invoke("vswirks:revealRunFiles", { runId: activeRun.id })
+              )
+            );
+          }
         }
       }
     }
@@ -1541,7 +1631,7 @@
     const left = document.createElement("div");
     left.innerHTML = `<strong>${escapeHtml(item.toolName || "tool")}</strong><div class="meta">${escapeHtml(item.summary || "")}</div>`;
     header.appendChild(left);
-    if (item.path) {
+    if (item.path && canOpenEditorIntegration()) {
       header.appendChild(
         createTextButton("Open", () => {
           void api.invoke("vswirks:openFile", { path: item.path });
@@ -1843,7 +1933,7 @@
     actionRow.appendChild(
       createTextButton("Replay", () => api.invoke("vswirks:replayRun", { runId: activeRun.id }))
     );
-    if (activeRun.changedFiles && activeRun.changedFiles.length) {
+    if (activeRun.changedFiles && activeRun.changedFiles.length && canOpenEditorIntegration()) {
       actionRow.appendChild(
         createTextButton("Reveal Files", () =>
           api.invoke("vswirks:revealRunFiles", { runId: activeRun.id })
@@ -1877,14 +1967,16 @@
       if (event.path) {
         const actions = document.createElement("div");
         actions.className = "inline-actions";
-        actions.appendChild(
-          createTextButton("Open", () => api.invoke("vswirks:openFile", { path: event.path }))
-        );
-        actions.appendChild(
-          createTextButton("Reveal", () =>
-            api.invoke("vswirks:revealRunFiles", { runId: activeRun.id })
-          )
-        );
+        if (canOpenEditorIntegration()) {
+          actions.appendChild(
+            createTextButton("Open", () => api.invoke("vswirks:openFile", { path: event.path }))
+          );
+          actions.appendChild(
+            createTextButton("Reveal", () =>
+              api.invoke("vswirks:revealRunFiles", { runId: activeRun.id })
+            )
+          );
+        }
         node.appendChild(actions);
       }
       timeline.appendChild(node);
@@ -1978,16 +2070,18 @@
       card.appendChild(diff);
       const actions = document.createElement("div");
       actions.className = "inline-actions";
-      if (event.path) {
+      if (event.path && canOpenEditorIntegration()) {
         actions.appendChild(
           createTextButton("Open", () => api.invoke("vswirks:openFile", { path: event.path }))
         );
       }
-      actions.appendChild(
-        createTextButton("Reveal", () =>
-          api.invoke("vswirks:revealRunFiles", { runId: activeRun.id })
-        )
-      );
+      if (canOpenEditorIntegration()) {
+        actions.appendChild(
+          createTextButton("Reveal", () =>
+            api.invoke("vswirks:revealRunFiles", { runId: activeRun.id })
+          )
+        );
+      }
       card.appendChild(actions);
       elements.diffPanel.appendChild(card);
     });
@@ -2089,9 +2183,14 @@
   }
 
   function renderProjectControls() {
+    const editor = getEditorIntegration();
     const hasWorkspace = Boolean(state.activeProject && state.activeProject.workspaceRoot);
     elements.setProjectTarget.disabled = state.pending || !hasWorkspace;
-    elements.openProjectInEditor.disabled = state.pending || !hasWorkspace;
+    elements.openProjectInEditor.classList.toggle("hidden", !editor.canOpen);
+    elements.openProjectInEditor.disabled = state.pending || !hasWorkspace || !editor.canOpen;
+    elements.attachEditorSelection.classList.toggle("hidden", !editor.available);
+    elements.attachEditorSelection.disabled =
+      state.pending || !editor.available || !editor.selectionAvailable;
   }
 
   function renderExecutionMode() {
@@ -2690,6 +2789,14 @@
   elements.studioDeepResearch.addEventListener("change", (e) => { studioFeatures.deepResearch = e.target.checked; });
   elements.studioWebTools.addEventListener("change", (e) => { studioFeatures.webTools = e.target.checked; });
   elements.studioQuickResponse.addEventListener("change", (e) => { studioFeatures.quickResponse = e.target.checked; });
+  elements.studioChatModeSelect.addEventListener("change", () => {
+    const m = elements.studioChatModeSelect.value;
+    const placeholders = { chat: "What are you working on?", plan: "Describe what you want to build...", act: "Describe a task to execute..." };
+    elements.studioPrompt.placeholder = placeholders[m] || placeholders.chat;
+    if (elements.studioModelSelect.options.length) {
+      elements.studioModelSelect.options[0].textContent = m === "chat" ? "Auto (llama3.1:8b)" : "Auto (qwen2.5-coder)";
+    }
+  });
   elements.studioVoice.addEventListener("change", (e) => { studioVoiceId = e.target.value; });
   elements.studioVoiceTest.addEventListener("click", () => {
     speakText("Hey, what are you working on? I'm your local dev companion. Let's build something great together.");
@@ -2699,10 +2806,18 @@
     void api.invoke("vswirks:createProject");
   });
   elements.studioNewChat.addEventListener("click", () => {
-    void api.invoke("vswirks:newChat", { mode: "chat", executionMode: "plan" });
+    void api.invoke("vswirks:newChat", {
+      mode: "chat",
+      executionMode: "plan",
+      studioChat: true
+    });
   });
   elements.studioClearProject.addEventListener("click", () => {
-    void api.invoke("vswirks:newChat", { mode: "chat", executionMode: "plan" });
+    void api.invoke("vswirks:newChat", {
+      mode: "chat",
+      executionMode: "plan",
+      studioChat: true
+    });
   });
   elements.studioExport.addEventListener("click", () => {
     void api.invoke("vswirks:exportConversation");

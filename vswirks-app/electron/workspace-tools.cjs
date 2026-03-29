@@ -717,6 +717,17 @@ async function openDiffInVSWirksEditor(leftPath, rightPath, label = "VSWirks Dif
   return true;
 }
 
+async function canOpenVSWirksEditor() {
+  if (await exists(CODE_EDITOR_BIN)) {
+    return true;
+  }
+  return (
+    await exists("/Applications/VSCodium.app")
+  ) || (
+    await exists("/Applications/Visual Studio Code.app")
+  );
+}
+
 async function exists(targetPath) {
   try {
     await fs.access(targetPath);
@@ -811,6 +822,7 @@ module.exports = {
   scanProjectIntelligence,
   pickValidationPlan,
   runValidationPlan,
+  canOpenVSWirksEditor,
   openInVSWirksEditor,
   openPathsInVSWirksEditor,
   openDiffInVSWirksEditor,

@@ -429,6 +429,8 @@ async function runChatMode({
     id: makeId("assistant"),
     role: "assistant",
     content: "",
+    thinking: "",
+    thinkingComplete: false,
     model,
     mode: "chat",
     executionMode: "plan",
@@ -463,9 +465,43 @@ async function runChatMode({
     signal,
     {
       onText: (chunk) => {
-        assistant.content += chunk;
+        // Parse <think>...</think> tags from reasoning models (e.g. llama3.3-8b-thinking)
+        // Accumulate into assistant.thinking while inside think block, otherwise into content
+        const raw = (assistant._rawBuffer || "") + chunk;
+        assistant._rawBuffer = "";
+
+        let remaining = raw;
+        while (remaining.length > 0) {
+          if (!assistant._inThinkBlock) {
+            const thinkStart = remaining.indexOf("<think>");
+            if (thinkStart === -1) {
+              // No think tag — all content
+              assistant.content += remaining;
+              remaining = "";
+            } else {
+              // Content before <think>, then enter think block
+              assistant.content += remaining.slice(0, thinkStart);
+              assistant._inThinkBlock = true;
+              remaining = remaining.slice(thinkStart + 7); // skip "<think>"
+            }
+          } else {
+            const thinkEnd = remaining.indexOf("</think>");
+            if (thinkEnd === -1) {
+              // Still inside think block — buffer as thinking
+              assistant.thinking += remaining;
+              remaining = "";
+            } else {
+              // Close think block
+              assistant.thinking += remaining.slice(0, thinkEnd);
+              assistant.thinkingComplete = true;
+              assistant._inThinkBlock = false;
+              remaining = remaining.slice(thinkEnd + 8); // skip "</think>"
+            }
+          }
+        }
+
         if (onStatus) {
-          onStatus("Streaming response");
+          onStatus(assistant._inThinkBlock ? "Thinking…" : "Streaming response");
         }
         if (onState) {
           onState();
@@ -478,7 +514,11 @@ async function runChatMode({
   );
 
   assistant.pending = false;
+  assistant.thinkingComplete = Boolean(assistant.thinking);
   assistant.usage = usage;
+  // Clean up internal parsing state
+  delete assistant._rawBuffer;
+  delete assistant._inThinkBlock;
   if (!assistant.content.trim()) {
     assistant.content = "(empty response)";
   }

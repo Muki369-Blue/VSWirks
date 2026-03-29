@@ -2,13 +2,14 @@
   "name": "vswirks-workspace",
   "private": true,
   "workspaces": [
-    "vswirks-app",
-    "VSCodium"
+    "vswirks-app"
   ],
   "scripts": {
     "test": "npm run verify",
     "test:app": "npm --prefix ./vswirks-app test",
-    "check:syntax": "node --check ./VSCodium/extension.js && node --check ./VSCodium/media/main.js && node --check ./vswirks-app/electron/main.cjs && node --check ./vswirks-app/electron/controller.cjs && node --check ./vswirks-app/electron/runner.cjs && node --check ./vswirks-app/electron/workspace-tools.cjs && node --check ./vswirks-app/src/app.js",
-    "verify": "npm run test:app && npm run check:syntax"
+    "check:syntax": "node --check ./shared/core.js && node --check ./shared/runtime-client.js && node --check ./shared/vswirks-state.js && node --check ./shared/workspace-filters.js && node --check ./vswirks-app/electron/editor-integration.cjs && node --check ./vswirks-app/electron/main.cjs && node --check ./vswirks-app/electron/controller.cjs && node --check ./vswirks-app/electron/runner.cjs && node --check ./vswirks-app/electron/workspace-tools.cjs && node --check ./vswirks-app/src/app.js",
+    "check:syntax:editor": "test -f ./VSCodium/extension.js && test -f ./VSCodium/media/main.js && node --check ./VSCodium/extension.js && node --check ./VSCodium/media/main.js",
+    "verify": "npm run test:app && npm run check:syntax",
+    "verify:editor": "npm run check:syntax:editor"
   }
 }
