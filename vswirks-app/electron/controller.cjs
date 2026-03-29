@@ -60,9 +60,10 @@ const {
 } = require("./workspace-tools.cjs");
 const { isImagePath, createImageAttachment } = require("./image-tools.cjs");
 const { runConversation, buildWorkspaceSystemPrompt } = require("./runner.cjs");
+const { synthesize: ttssynthesize } = require("./tts-engine.cjs");
 
 const AUTO_MODEL_VALUE = "__auto__";
-const LEGACY_CODER_MODEL = "qwen2.5-coder:14b-instruct";
+const LEGACY_CODER_MODEL = "mlx/Qwen3.5-27B-Claude-4.6-Opus-Distilled-MLX-6bit";
 const DEFAULT_CODER_MODEL = "devstral-small-2";
 const DEFAULT_CHAT_MODEL = "llama3.3-8b-thinking:q6";
 const DEFAULT_AGENT_PROFILE_ID = "app-default";
@@ -86,6 +87,7 @@ class VSWirksController {
     this.pendingApprovalResolver = null;
     this.promptRefining = false;
     this.lastStatus = "Ready";
+    this._abliterateProcess = null;
     this.serviceState = {
       healthy: false,
       starting: false,
@@ -104,6 +106,765 @@ class VSWirksController {
       defaultAgentProfileId: DEFAULT_AGENT_PROFILE_ID
     };
     this.bridgePollHandle = undefined;
+    this.fileWatcher = null;
+    this.recentFileChanges = [];
+  }
+
+  // ── File watcher ───────────────────────────────────
+
+  startFileWatcher(project) {
+    this.stopFileWatcher();
+    if (!project || !project.workspaceRoot) return;
+    const fsSync = require("fs");
+    try {
+      this.fileWatcher = fsSync.watch(
+        project.workspaceRoot,
+        { recursive: true },
+        (eventType, filename) => {
+          if (!filename) return;
+          // Ignore node_modules, .git, __pycache__, backups
+          if (/node_modules|\.git\/|__pycache__|\.bak\./i.test(filename)) return;
+          const entry = { type: eventType, file: filename, time: Date.now() };
+          this.recentFileChanges.unshift(entry);
+          if (this.recentFileChanges.length > 20) {
+            this.recentFileChanges = this.recentFileChanges.slice(0, 20);
+          }
+          // Debounce state push
+          if (this._fileWatchDebounce) clearTimeout(this._fileWatchDebounce);
+          this._fileWatchDebounce = setTimeout(() => this.postState(), 1000);
+        }
+      );
+    } catch {
+      // fs.watch may fail on some platforms/paths
+    }
+  }
+
+  stopFileWatcher() {
+    if (this.fileWatcher) {
+      this.fileWatcher.close();
+      this.fileWatcher = null;
+    }
+    this.recentFileChanges = [];
+  }
+
+  // ── Conversation export / import ──────────────────
+
+  async exportConversation({ threadId } = {}) {
+    const project = this.getActiveProject();
+    if (!project) return false;
+    const thread = threadId
+      ? (project.threads || []).find((t) => t.id === threadId)
+      : this.getActiveThread(project);
+    if (!thread) return false;
+
+    const result = await dialog.showSaveDialog(this.win, {
+      defaultPath: `${project.name}-${thread.label || "chat"}.json`,
+      filters: [{ name: "JSON", extensions: ["json"] }]
+    });
+    if (result.canceled || !result.filePath) return false;
+
+    const exportData = {
+      version: 1,
+      app: "vswirks",
+      exportedAt: new Date().toISOString(),
+      project: { name: project.name, workspaceRoot: project.workspaceRoot },
+      thread: { label: thread.label, mode: thread.mode },
+      history: thread.history || []
+    };
+    await fs.writeFile(result.filePath, JSON.stringify(exportData, null, 2), "utf-8");
+    return true;
+  }
+
+  async importConversation() {
+    const result = await dialog.showOpenDialog(this.win, {
+      filters: [{ name: "JSON", extensions: ["json"] }],
+      properties: ["openFile"]
+    });
+    if (result.canceled || !result.filePaths.length) return false;
+
+    const raw = await fs.readFile(result.filePaths[0], "utf-8");
+    const data = JSON.parse(raw);
+    if (!data || !Array.isArray(data.history)) {
+      throw new Error("Invalid conversation export file");
+    }
+
+    const project = this.getActiveProject();
+    if (!project) return false;
+
+    const newThread = this.newChat({ mode: "chat", executionMode: "plan" });
+    const thread = this.getActiveThread(project);
+    if (thread) {
+      thread.label = data.thread && data.thread.label ? `Imported: ${data.thread.label}` : "Imported chat";
+      thread.history = data.history;
+    }
+    await this.persistState();
+    this.postState();
+    return true;
+  }
+
+  // ── Ollama model manager ───────────────────────────
+
+  async listOllamaModels() {
+    try {
+      const result = cp.execSync("ollama list", { encoding: "utf-8", timeout: 10000 });
+      const lines = result.trim().split("\n").slice(1); // skip header
+      return lines.map((line) => {
+        const parts = line.split(/\s{2,}/);
+        return {
+          name: parts[0] || "",
+          id: parts[1] || "",
+          size: parts[2] || "",
+          modified: parts[3] || ""
+        };
+      }).filter((m) => m.name);
+    } catch {
+      return [];
+    }
+  }
+
+  async pullOllamaModel({ name } = {}) {
+    if (!name) return { ok: false, error: "No model name provided" };
+    try {
+      cp.execFileSync("ollama", ["pull", name], { encoding: "utf-8", timeout: 600000 });
+      await this.refreshRuntimeState(true);
+      this.postState();
+      return { ok: true };
+    } catch (error) {
+      return { ok: false, error: error.message };
+    }
+  }
+
+  async deleteOllamaModel({ name } = {}) {
+    if (!name) return { ok: false, error: "No model name provided" };
+    try {
+      cp.execFileSync("ollama", ["rm", name], { encoding: "utf-8", timeout: 30000 });
+      await this.refreshRuntimeState(true);
+      this.postState();
+      return { ok: true };
+    } catch (error) {
+      return { ok: false, error: error.message };
+    }
+  }
+
+  // ── Git status ─────────────────────────────────────
+
+  async getGitStatus({ projectId } = {}) {
+    const project = projectId
+      ? this.projects.find((p) => p.id === projectId)
+      : this.getActiveProject();
+    if (!project || !project.workspaceRoot) {
+      return { ok: false, error: "No project workspace" };
+    }
+    try {
+      const branch = cp.execSync("git rev-parse --abbrev-ref HEAD", {
+        cwd: project.workspaceRoot,
+        encoding: "utf-8",
+        timeout: 5000
+      }).trim();
+      const status = cp.execSync("git status --porcelain", {
+        cwd: project.workspaceRoot,
+        encoding: "utf-8",
+        timeout: 5000
+      }).trim();
+      const logRaw = cp.execSync("git log --oneline -10", {
+        cwd: project.workspaceRoot,
+        encoding: "utf-8",
+        timeout: 5000
+      }).trim();
+      return {
+        ok: true,
+        branch,
+        changes: status ? status.split("\n").length : 0,
+        statusLines: status ? status.split("\n") : [],
+        recentCommits: logRaw ? logRaw.split("\n") : []
+      };
+    } catch (error) {
+      return { ok: false, error: error.message };
+    }
+  }
+
+  // ── Terminal / command runner ────────────────────────
+
+  async runCommand({ command } = {}) {
+    if (!command) return { ok: false, error: "No command" };
+    const project = this.getActiveProject();
+    const cwd = project && project.workspaceRoot ? project.workspaceRoot : os.homedir();
+    try {
+      const output = cp.execSync(command, {
+        cwd,
+        encoding: "utf-8",
+        timeout: 30000,
+        maxBuffer: 1024 * 512
+      });
+      return { ok: true, output: output.slice(0, 10000) };
+    } catch (error) {
+      return {
+        ok: false,
+        output: (error.stdout || "") + (error.stderr || ""),
+        error: error.message
+      };
+    }
+  }
+
+  // ── Model A/B comparison ───────────────────────────
+
+  async compareModels({ prompt, modelA, modelB } = {}) {
+    if (!prompt || !modelA || !modelB) {
+      return { ok: false, error: "Missing prompt, modelA, or modelB" };
+    }
+    const baseUrl = this.settings.runtimeBaseUrl || DEFAULT_RUNTIME_BASE_URL;
+    const body = (model) => ({
+      model,
+      messages: [{ role: "user", content: prompt }],
+      max_tokens: 1024,
+      temperature: 0.7
+    });
+
+    const { fetchRuntimeJson } = require("../shared/runtime-client");
+    const [resultA, resultB] = await Promise.allSettled([
+      fetchRuntimeJson(baseUrl, "/chat/completions", body(modelA)),
+      fetchRuntimeJson(baseUrl, "/chat/completions", body(modelB))
+    ]);
+
+    const extract = (r) => {
+      if (r.status === "rejected") return { error: r.reason.message };
+      const choice = r.value && r.value.choices && r.value.choices[0];
+      return { content: choice && choice.message ? choice.message.content : "" };
+    };
+
+    return {
+      ok: true,
+      modelA: { name: modelA, ...extract(resultA) },
+      modelB: { name: modelB, ...extract(resultB) }
+    };
+  }
+
+  // ── Project file search ────────────────────────────
+
+  async searchProjectFiles({ query, projectId } = {}) {
+    if (!query) return { ok: false, results: [] };
+    const project = projectId
+      ? this.projects.find((p) => p.id === projectId)
+      : this.getActiveProject();
+    if (!project || !project.workspaceRoot) {
+      return { ok: false, error: "No project workspace" };
+    }
+    try {
+      const output = cp.execFileSync("grep", [
+        "-rl", "--include=*.js", "--include=*.ts", "--include=*.py",
+        "--include=*.json", "--include=*.md", "--include=*.html",
+        "--include=*.css", "--include=*.cjs", "--include=*.mjs",
+        "--", query, "."
+      ], { cwd: project.workspaceRoot, encoding: "utf-8", timeout: 10000, maxBuffer: 1024 * 256 });
+      const files = output.trim().split("\n").filter(Boolean).slice(0, 20);
+      return { ok: true, results: files };
+    } catch {
+      return { ok: true, results: [] };
+    }
+  }
+
+  // ── Git interactive operations ─────────────────────
+
+  _gitProjectCwd(projectId) {
+    const project = projectId
+      ? this.projects.find((p) => p.id === projectId)
+      : this.getActiveProject();
+    if (!project || !project.workspaceRoot) return null;
+    return project.workspaceRoot;
+  }
+
+  async gitStage({ files } = {}) {
+    const cwd = this._gitProjectCwd();
+    if (!cwd) return { ok: false, error: "No project workspace" };
+    if (!Array.isArray(files) || !files.length) return { ok: false, error: "No files specified" };
+    try {
+      cp.execFileSync("git", ["add", "--"].concat(files), { cwd, encoding: "utf-8", timeout: 10000 });
+      return { ok: true };
+    } catch (error) {
+      return { ok: false, error: error.message };
+    }
+  }
+
+  async gitUnstage({ files } = {}) {
+    const cwd = this._gitProjectCwd();
+    if (!cwd) return { ok: false, error: "No project workspace" };
+    if (!Array.isArray(files) || !files.length) return { ok: false, error: "No files specified" };
+    try {
+      cp.execFileSync("git", ["restore", "--staged", "--"].concat(files), { cwd, encoding: "utf-8", timeout: 10000 });
+      return { ok: true };
+    } catch (error) {
+      return { ok: false, error: error.message };
+    }
+  }
+
+  async gitCommit({ message } = {}) {
+    const cwd = this._gitProjectCwd();
+    if (!cwd) return { ok: false, error: "No project workspace" };
+    if (!message || !message.trim()) return { ok: false, error: "No commit message" };
+    try {
+      const output = cp.execFileSync("git", ["commit", "-m", message.trim()], { cwd, encoding: "utf-8", timeout: 30000 });
+      return { ok: true, output: output.slice(0, 5000) };
+    } catch (error) {
+      return { ok: false, error: (error.stderr || error.message).slice(0, 2000) };
+    }
+  }
+
+  async gitDiff({ file } = {}) {
+    const cwd = this._gitProjectCwd();
+    if (!cwd) return { ok: false, error: "No project workspace" };
+    try {
+      const args = file ? `-- ${JSON.stringify(file)}` : "";
+      const staged = cp.execSync(`git diff --cached ${args}`, { cwd, encoding: "utf-8", timeout: 10000 }).slice(0, 20000);
+      const unstaged = cp.execSync(`git diff ${args}`, { cwd, encoding: "utf-8", timeout: 10000 }).slice(0, 20000);
+      return { ok: true, staged, unstaged };
+    } catch (error) {
+      return { ok: false, error: error.message };
+    }
+  }
+
+  async gitBranches() {
+    const cwd = this._gitProjectCwd();
+    if (!cwd) return { ok: false, error: "No project workspace" };
+    try {
+      const raw = cp.execSync("git branch --no-color", { cwd, encoding: "utf-8", timeout: 5000 }).trim();
+      const branches = raw.split("\n").map((b) => {
+        const current = b.startsWith("* ");
+        return { name: b.replace(/^\*?\s+/, ""), current };
+      });
+      return { ok: true, branches };
+    } catch (error) {
+      return { ok: false, error: error.message };
+    }
+  }
+
+  async gitCheckout({ branch } = {}) {
+    const cwd = this._gitProjectCwd();
+    if (!cwd) return { ok: false, error: "No project workspace" };
+    if (!branch) return { ok: false, error: "No branch specified" };
+    try {
+      cp.execFileSync("git", ["checkout", branch], { cwd, encoding: "utf-8", timeout: 15000 });
+      return { ok: true };
+    } catch (error) {
+      return { ok: false, error: error.message };
+    }
+  }
+
+  // ── RAG / Project Indexing ─────────────────────────
+
+  async indexProject({ projectId } = {}) {
+    const project = projectId
+      ? this.projects.find((p) => p.id === projectId)
+      : this.getActiveProject();
+    if (!project || !project.workspaceRoot) {
+      return { ok: false, error: "No project workspace" };
+    }
+    const root = project.workspaceRoot;
+    const baseUrl = this.settings.runtimeBaseUrl || DEFAULT_RUNTIME_BASE_URL;
+
+    // Collect files
+    const walkDir = async (dir, prefix = "") => {
+      const entries = await fs.readdir(dir, { withFileTypes: true }).catch(() => []);
+      const results = [];
+      for (const entry of entries) {
+        const rel = prefix ? `${prefix}/${entry.name}` : entry.name;
+        if (entry.name.startsWith(".") || ["node_modules", "__pycache__", "venv", ".git", "dist", "build"].includes(entry.name)) continue;
+        if (entry.isDirectory()) {
+          results.push(...await walkDir(path.join(dir, entry.name), rel));
+        } else if (/\.(js|ts|py|rs|go|java|json|md|html|css|cjs|mjs|tsx|jsx|yaml|yml|toml|cfg|sh)$/i.test(entry.name)) {
+          results.push(rel);
+        }
+      }
+      return results;
+    };
+
+    const files = await walkDir(root);
+    const chunks = [];
+    for (const file of files.slice(0, 200)) {
+      try {
+        const content = await fs.readFile(path.join(root, file), "utf-8");
+        // Split into ~400-token chunks (~1600 chars)
+        const lines = content.split("\n");
+        for (let i = 0; i < lines.length; i += 40) {
+          const chunk = lines.slice(i, i + 40).join("\n").trim();
+          if (chunk.length > 20) {
+            chunks.push({ file, startLine: i + 1, text: chunk.slice(0, 1600) });
+          }
+        }
+      } catch { /* skip unreadable files */ }
+    }
+
+    // Embed via runtime /v1/embeddings
+    const batchSize = 20;
+    const vectors = [];
+    for (let i = 0; i < chunks.length; i += batchSize) {
+      const batch = chunks.slice(i, i + batchSize);
+      try {
+        const result = await fetchRuntimeJson(baseUrl, "/embeddings", {
+          model: "nomic-embed-text",
+          input: batch.map((c) => `${c.file}:${c.startLine}\n${c.text}`)
+        });
+        if (result && Array.isArray(result.data)) {
+          result.data.forEach((item, j) => {
+            vectors.push({ ...batch[j], embedding: item.embedding });
+          });
+        }
+      } catch {
+        // If embeddings fail, store chunks without vectors (text search fallback)
+        batch.forEach((c) => vectors.push({ ...c, embedding: null }));
+      }
+    }
+
+    // Save index
+    const indexDir = path.join(root, ".vswirks");
+    await fs.mkdir(indexDir, { recursive: true }).catch(() => {});
+    await fs.writeFile(
+      path.join(indexDir, "rag-index.json"),
+      JSON.stringify({ version: 1, indexed: new Date().toISOString(), chunks: vectors.length, data: vectors }, null, 0),
+      "utf-8"
+    );
+
+    return { ok: true, files: files.length, chunks: vectors.length };
+  }
+
+  async ragSearch({ query, projectId, topK = 5 } = {}) {
+    if (!query) return { ok: false, results: [] };
+    const project = projectId
+      ? this.projects.find((p) => p.id === projectId)
+      : this.getActiveProject();
+    if (!project || !project.workspaceRoot) {
+      return { ok: false, error: "No project workspace" };
+    }
+
+    const indexPath = path.join(project.workspaceRoot, ".vswirks", "rag-index.json");
+    let index;
+    try {
+      index = JSON.parse(await fs.readFile(indexPath, "utf-8"));
+    } catch {
+      return { ok: false, error: "No RAG index found. Index the project first." };
+    }
+
+    const baseUrl = this.settings.runtimeBaseUrl || DEFAULT_RUNTIME_BASE_URL;
+    const hasVectors = index.data.some((d) => d.embedding);
+
+    if (hasVectors) {
+      // Vector search
+      try {
+        const embedResult = await fetchRuntimeJson(baseUrl, "/embeddings", {
+          model: "nomic-embed-text",
+          input: [query]
+        });
+        const queryVec = embedResult && embedResult.data && embedResult.data[0] && embedResult.data[0].embedding;
+        if (queryVec) {
+          const scored = index.data
+            .filter((d) => d.embedding)
+            .map((d) => {
+              let dot = 0, normA = 0, normB = 0;
+              for (let i = 0; i < queryVec.length; i++) {
+                dot += queryVec[i] * d.embedding[i];
+                normA += queryVec[i] * queryVec[i];
+                normB += d.embedding[i] * d.embedding[i];
+              }
+              const score = dot / (Math.sqrt(normA) * Math.sqrt(normB) + 1e-10);
+              return { file: d.file, startLine: d.startLine, text: d.text, score };
+            })
+            .sort((a, b) => b.score - a.score)
+            .slice(0, topK);
+          return { ok: true, results: scored };
+        }
+      } catch { /* fall through to text search */ }
+    }
+
+    // Fallback: text search
+    const queryLower = query.toLowerCase();
+    const results = index.data
+      .map((d) => {
+        const idx = d.text.toLowerCase().indexOf(queryLower);
+        return idx >= 0 ? { file: d.file, startLine: d.startLine, text: d.text, score: 1 } : null;
+      })
+      .filter(Boolean)
+      .slice(0, topK);
+    return { ok: true, results };
+  }
+
+  // ── Image generation ──────────────────────────────
+
+  async generateImage({ prompt, width = 512, height = 512 } = {}) {
+    if (!prompt) return { ok: false, error: "No prompt provided" };
+    const project = this.getActiveProject();
+    const outputDir = project && project.workspaceRoot
+      ? path.join(project.workspaceRoot, ".vswirks", "generated")
+      : path.join(os.tmpdir(), "vswirks-generated");
+    await fs.mkdir(outputDir, { recursive: true }).catch(() => {});
+    const outputFile = path.join(outputDir, `img-${Date.now()}.png`);
+
+    // Try runtime /v1/images/generations first
+    const baseUrl = this.settings.runtimeBaseUrl || DEFAULT_RUNTIME_BASE_URL;
+    try {
+      const result = await fetchRuntimeJson(baseUrl, "/images/generations", {
+        model: "stable-diffusion",
+        prompt,
+        size: `${width}x${height}`,
+        n: 1,
+        response_format: "b64_json"
+      });
+      if (result && result.data && result.data[0] && result.data[0].b64_json) {
+        await fs.writeFile(outputFile, Buffer.from(result.data[0].b64_json, "base64"));
+        return { ok: true, path: outputFile };
+      }
+    } catch { /* fall through to CLI */ }
+
+    // Fallback: try mlx_stable_diffusion CLI
+    try {
+      cp.execSync(
+        `python -m mlx_stable_diffusion.generate --prompt ${JSON.stringify(prompt)} --output ${JSON.stringify(outputFile)} --width ${width} --height ${height}`,
+        { encoding: "utf-8", timeout: 120000 }
+      );
+      return { ok: true, path: outputFile };
+    } catch (error) {
+      return { ok: false, error: `Image generation failed: ${error.message}` };
+    }
+  }
+
+  // ── Text-to-Speech (Kokoro TTS) ───────────────────
+
+  async synthesizeSpeech({ text, voice } = {}) {
+    if (!text) return { ok: false, error: "No text provided" };
+    try {
+      const result = await ttssynthesize(text, voice || "af_heart");
+      return { ok: true, wavPath: result.wavPath, sampleRate: result.sampleRate, durationMs: result.durationMs };
+    } catch (error) {
+      return { ok: false, error: `TTS failed: ${error.message}` };
+    }
+  }
+
+  // ── Model Lab (Abliterator integration) ────────────
+
+  async listLocalModels() {
+    const models = [];
+    // Ollama models
+    try {
+      const ollamaList = await this.listOllamaModels();
+      ollamaList.forEach(m => models.push({ ...m, source: "ollama", abliterated: false }));
+    } catch {}
+    // Abliterated models
+    const ablDir = path.join(os.homedir(), ".abliterate", "abliterated_models");
+    try {
+      const entries = await fs.readdir(ablDir, { withFileTypes: true });
+      for (const entry of entries) {
+        if (entry.isDirectory()) {
+          models.push({ name: entry.name, source: "abliterated", abliterated: true, path: path.join(ablDir, entry.name) });
+        }
+      }
+    } catch {}
+    // HuggingFace cache
+    const hfDir = path.join(os.homedir(), ".cache", "huggingface", "hub");
+    try {
+      const entries = await fs.readdir(hfDir, { withFileTypes: true });
+      for (const entry of entries) {
+        if (entry.isDirectory() && entry.name.startsWith("models--")) {
+          const modelName = entry.name.replace("models--", "").replace(/--/g, "/");
+          models.push({ name: modelName, source: "huggingface", abliterated: false, path: path.join(hfDir, entry.name) });
+        }
+      }
+    } catch {}
+    return { ok: true, models };
+  }
+
+  async listAbliteratedModels() {
+    const ablDir = path.join(os.homedir(), ".abliterate", "abliterated_models");
+    try {
+      const entries = await fs.readdir(ablDir, { withFileTypes: true });
+      const models = [];
+      for (const entry of entries) {
+        if (entry.isDirectory()) {
+          let meta = {};
+          try { meta = JSON.parse(await fs.readFile(path.join(ablDir, entry.name, "abliteration_meta.json"), "utf-8")); } catch {}
+          models.push({ name: entry.name, path: path.join(ablDir, entry.name), meta });
+        }
+      }
+      return { ok: true, models };
+    } catch {
+      return { ok: true, models: [] };
+    }
+  }
+
+  async getAbliterateConfigs() {
+    const configDir = path.join(os.homedir(), ".abliterate", "job_configs");
+    try {
+      const entries = await fs.readdir(configDir);
+      const configs = [];
+      for (const entry of entries) {
+        if (entry.endsWith(".json")) {
+          try {
+            const data = JSON.parse(await fs.readFile(path.join(configDir, entry), "utf-8"));
+            configs.push({ name: entry.replace(".json", ""), ...data });
+          } catch {}
+        }
+      }
+      return { ok: true, configs };
+    } catch {
+      return { ok: true, configs: [] };
+    }
+  }
+
+  async saveAbliterateConfig({ name, config } = {}) {
+    if (!name || !config) return { ok: false, error: "Missing name or config" };
+    const configDir = path.join(os.homedir(), ".abliterate", "job_configs");
+    await fs.mkdir(configDir, { recursive: true }).catch(() => {});
+    await fs.writeFile(path.join(configDir, `${name}.json`), JSON.stringify(config, null, 2), "utf-8");
+    return { ok: true };
+  }
+
+  async abliterateModel({ modelPath, config = {} } = {}) {
+    if (!modelPath) return { ok: false, error: "No model path provided" };
+    const abliteratorDir = "/Users/bluewirks.max/Documents/abliterator-main";
+    const outputDir = path.join(os.homedir(), ".abliterate", "abliterated_models", path.basename(modelPath) + "-abliterated");
+    await fs.mkdir(outputDir, { recursive: true }).catch(() => {});
+
+    // Find Python with abliterator deps
+    const pythonCandidates = [
+      path.join(abliteratorDir, ".venv", "bin", "python"),
+      path.join(os.homedir(), "dev", "ai-app", ".venv", "bin", "python"),
+      "python3"
+    ];
+    let pythonBin = "python3";
+    const fsSync = require("fs");
+    for (const c of pythonCandidates) {
+      if (fsSync.existsSync(c)) { pythonBin = c; break; }
+    }
+
+    const configJson = JSON.stringify({
+      model_path: modelPath,
+      output_path: outputDir,
+      num_prompts: config.numPrompts || 30,
+      direction_multiplier: config.directionMultiplier || 1.0,
+      use_null_space: config.useNullSpace || false,
+      use_winsorization: config.useWinsorization || true,
+      adaptive_layer_weighting: config.adaptiveLayerWeighting || true,
+      ...config
+    });
+
+    // Run abliteration as subprocess
+    const configFile = path.join(os.tmpdir(), `abliterate-config-${Date.now()}.json`);
+    await fs.writeFile(configFile, configJson, "utf-8");
+
+    this._abliterateProcess = cp.spawn(pythonBin, [
+      "-c",
+      `import json, sys; sys.path.insert(0, ${JSON.stringify(abliteratorDir)}); from src.abliterate import run_abliteration, AbliterationConfig; config = AbliterationConfig(**json.load(open(${JSON.stringify(configFile)}))); run_abliteration(config); print("ABLITERATION_COMPLETE")`
+    ], {
+      cwd: abliteratorDir,
+      env: { ...process.env, PYTHONPATH: abliteratorDir }
+    });
+
+    let output = "";
+    this._abliterateProcess.stdout.on("data", (chunk) => {
+      output += chunk.toString();
+      const lines = output.split("\n");
+      for (const line of lines) {
+        if (line.includes("layer") || line.includes("Layer") || line.includes("%")) {
+          this.emitEvent({ type: "abliterate-progress", label: line.trim() });
+        }
+      }
+    });
+    this._abliterateProcess.stderr.on("data", (chunk) => {
+      const text = chunk.toString();
+      if (text.includes("layer") || text.includes("%")) {
+        this.emitEvent({ type: "abliterate-progress", label: text.trim() });
+      }
+    });
+
+    return new Promise((resolve) => {
+      this._abliterateProcess.on("close", async (code) => {
+        this._abliterateProcess = null;
+        await fs.unlink(configFile).catch(() => {});
+        if (code === 0) {
+          // Save meta
+          await fs.writeFile(path.join(outputDir, "abliteration_meta.json"), JSON.stringify({
+            sourceModel: modelPath,
+            config,
+            completedAt: new Date().toISOString()
+          }, null, 2), "utf-8").catch(() => {});
+          resolve({ ok: true, outputPath: outputDir });
+        } else {
+          resolve({ ok: false, error: `Abliteration exited with code ${code}` });
+        }
+      });
+    });
+  }
+
+  abliterateCancel() {
+    if (this._abliterateProcess) {
+      this._abliterateProcess.kill("SIGTERM");
+      this._abliterateProcess = null;
+      return { ok: true };
+    }
+    return { ok: false, error: "No abliteration in progress" };
+  }
+
+  async evaluateRefusal({ modelPath } = {}) {
+    if (!modelPath) return { ok: false, error: "No model path" };
+    const abliteratorDir = "/Users/bluewirks.max/Documents/abliterator-main";
+    const pythonBin = path.join(abliteratorDir, ".venv", "bin", "python");
+    try {
+      const output = cp.execFileSync(pythonBin, [
+        "-c",
+        `import json, sys; sys.path.insert(0, "${abliteratorDir}"); from utils.refusal_eval import RefusalScanner; from src.model_utils import load_model_and_tokenizer; model, tok = load_model_and_tokenizer("${modelPath}"); scanner = RefusalScanner(model, tok); results = scanner.quick_scan(); print(json.dumps(results))`
+      ], { encoding: "utf-8", timeout: 300000, cwd: abliteratorDir, env: { ...process.env, PYTHONPATH: abliteratorDir } });
+      const result = JSON.parse(output.trim().split("\n").pop());
+      return { ok: true, ...result };
+    } catch (error) {
+      return { ok: false, error: error.message };
+    }
+  }
+
+  async exportToGguf({ modelPath, quantType = "Q4_K_M" } = {}) {
+    if (!modelPath) return { ok: false, error: "No model path" };
+    const abliteratorDir = "/Users/bluewirks.max/Documents/abliterator-main";
+    const outputDir = path.join(os.homedir(), ".abliterate", "gguf_exports");
+    await fs.mkdir(outputDir, { recursive: true }).catch(() => {});
+    const pythonBin = path.join(abliteratorDir, ".venv", "bin", "python");
+    try {
+      const output = cp.execFileSync(pythonBin, [
+        "-c",
+        `import json, sys; sys.path.insert(0, "${abliteratorDir}"); from src.gguf_export import export_to_gguf, GGUFExportConfig; from pathlib import Path; config = GGUFExportConfig(model_path=Path("${modelPath}"), output_dir=Path("${outputDir}"), quant_type="${quantType}"); result = export_to_gguf(config); print(json.dumps({"output": str(result)}))`
+      ], { encoding: "utf-8", timeout: 600000, cwd: abliteratorDir, env: { ...process.env, PYTHONPATH: abliteratorDir } });
+      return { ok: true, output: output.trim() };
+    } catch (error) {
+      return { ok: false, error: error.message };
+    }
+  }
+
+  async importToOllama({ ggufPath, modelName } = {}) {
+    if (!ggufPath || !modelName) return { ok: false, error: "Missing ggufPath or modelName" };
+    const modelfile = `FROM ${ggufPath}\nPARAMETER temperature 0.7\nPARAMETER num_ctx 4096`;
+    const tmpModelfile = path.join(os.tmpdir(), `Modelfile-${Date.now()}`);
+    await fs.writeFile(tmpModelfile, modelfile, "utf-8");
+    try {
+      cp.execFileSync("ollama", ["create", modelName, "-f", tmpModelfile], { encoding: "utf-8", timeout: 300000 });
+      await fs.unlink(tmpModelfile).catch(() => {});
+      await this.refreshRuntimeState(true);
+      this.postState();
+      return { ok: true };
+    } catch (error) {
+      await fs.unlink(tmpModelfile).catch(() => {});
+      return { ok: false, error: error.message };
+    }
+  }
+
+  cleanup() {
+    if (this.bridgePollHandle) {
+      clearInterval(this.bridgePollHandle);
+      this.bridgePollHandle = undefined;
+    }
+    if (this.abortController) {
+      this.abortController.abort();
+      this.abortController = null;
+    }
+    if (this._abliterateProcess) {
+      this._abliterateProcess.kill("SIGTERM");
+      this._abliterateProcess = null;
+    }
+    this.stopFileWatcher();
   }
 
   async initialize() {
@@ -115,6 +876,7 @@ class VSWirksController {
     const project = this.ensureProject();
     this.startBridgePolling();
     if (project) {
+      this.startFileWatcher(project);
       await this.refreshProjectIntelligence(project, false);
     }
     await this.persistState();
@@ -169,6 +931,8 @@ class VSWirksController {
         return this.replayRun(payload || {});
       case "vswirks:forkRunCheckpoint":
         return this.forkRunCheckpoint(payload || {});
+      case "vswirks:uploadSpec":
+        return this.uploadSpec();
       case "vswirks:useMessageAsSpec":
         return this.useMessageAsSpec(payload || {});
       case "vswirks:reviewGeneratedFiles":
@@ -200,6 +964,62 @@ class VSWirksController {
         await this.refreshProjectIntelligence(this.getActiveProject(), false);
         this.postState();
         return true;
+      case "vswirks:exportConversation":
+        return this.exportConversation(payload || {});
+      case "vswirks:importConversation":
+        return this.importConversation();
+      case "vswirks:listOllamaModels":
+        return this.listOllamaModels();
+      case "vswirks:pullOllamaModel":
+        return this.pullOllamaModel(payload || {});
+      case "vswirks:deleteOllamaModel":
+        return this.deleteOllamaModel(payload || {});
+      case "vswirks:getGitStatus":
+        return this.getGitStatus(payload || {});
+      case "vswirks:gitStage":
+        return this.gitStage(payload || {});
+      case "vswirks:gitUnstage":
+        return this.gitUnstage(payload || {});
+      case "vswirks:gitCommit":
+        return this.gitCommit(payload || {});
+      case "vswirks:gitDiff":
+        return this.gitDiff(payload || {});
+      case "vswirks:gitBranches":
+        return this.gitBranches();
+      case "vswirks:gitCheckout":
+        return this.gitCheckout(payload || {});
+      case "vswirks:runCommand":
+        return this.runCommand(payload || {});
+      case "vswirks:compareModels":
+        return this.compareModels(payload || {});
+      case "vswirks:searchProjectFiles":
+        return this.searchProjectFiles(payload || {});
+      case "vswirks:indexProject":
+        return this.indexProject(payload || {});
+      case "vswirks:ragSearch":
+        return this.ragSearch(payload || {});
+      case "vswirks:generateImage":
+        return this.generateImage(payload || {});
+      case "vswirks:synthesizeSpeech":
+        return this.synthesizeSpeech(payload || {});
+      case "vswirks:listLocalModels":
+        return this.listLocalModels();
+      case "vswirks:abliterateModel":
+        return this.abliterateModel(payload || {});
+      case "vswirks:abliterateCancel":
+        return this.abliterateCancel();
+      case "vswirks:listAbliteratedModels":
+        return this.listAbliteratedModels();
+      case "vswirks:evaluateRefusal":
+        return this.evaluateRefusal(payload || {});
+      case "vswirks:exportToGguf":
+        return this.exportToGguf(payload || {});
+      case "vswirks:importToOllama":
+        return this.importToOllama(payload || {});
+      case "vswirks:getAbliterateConfigs":
+        return this.getAbliterateConfigs();
+      case "vswirks:saveAbliterateConfig":
+        return this.saveAbliterateConfig(payload || {});
       default:
         return null;
     }
@@ -714,6 +1534,7 @@ class VSWirksController {
     this.activeProjectId = projectId;
     const project = this.getActiveProject();
     this.lastStatus = "Project switched";
+    this.startFileWatcher(project);
     await this.refreshProjectIntelligence(project, false);
     await this.persistState();
     await this.publishEditorSelection(project);
@@ -1524,6 +2345,27 @@ class VSWirksController {
         }
       );
 
+      // Studio mode: prepend developer-companion system prompt
+      if (payload.studioMode) {
+        const directives = [];
+        const features = Array.isArray(payload.studioFeatures) ? payload.studioFeatures : [];
+        directives.push(
+          "You are a developer's local-first AI companion called VSWirks Studio.",
+          "Be conversational, practical, and developer-casual in tone.",
+          "Give real answers, not filler. Be direct."
+        );
+        if (features.includes("deep-research")) {
+          directives.push("Provide thorough, deeply researched answers with references and rationale.");
+        }
+        if (features.includes("web-tools")) {
+          directives.push("Reference web resources, current tooling, and ecosystem context when relevant.");
+        }
+        if (features.includes("quick-response")) {
+          directives.push("Keep your answer concise and actionable -- aim for brief practical guidance.");
+        }
+        runRecord.resolvedSystemPrompt = directives.join(" ") + "\n\n" + (runRecord.resolvedSystemPrompt || "");
+      }
+
       await this.dependencies.runConversation({
         project,
         thread,
@@ -1853,6 +2695,77 @@ class VSWirksController {
     return true;
   }
 
+  async uploadSpec() {
+    const project = this.getActiveProject();
+    const thread = this.getActiveThread(project);
+    if (!project || !thread) {
+      return false;
+    }
+    const picked = await dialog.showOpenDialog(this.window, {
+      title: "Upload a spec file",
+      properties: ["openFile"],
+      filters: [
+        {
+          name: "Spec files",
+          extensions: ["md", "txt", "json", "yaml", "yml"]
+        }
+      ]
+    });
+    if (picked.canceled || !picked.filePaths.length) {
+      return false;
+    }
+    const filePath = picked.filePaths[0];
+    const raw = await fs.readFile(filePath, "utf8").catch(() => "");
+    if (!raw.trim()) {
+      this.emitEvent({ type: "error", message: "Spec file is empty" });
+      return false;
+    }
+
+    let parsed = {};
+    const ext = path.extname(filePath).toLowerCase();
+    if (ext === ".json") {
+      parsed = safeJsonParse(raw) || {};
+    } else {
+      // Extract structured fields from markdown headings
+      const goalMatch = raw.match(/^#+\s*(?:goal|objective|summary)[:\s]*(.*)/im);
+      const titleMatch = raw.match(/^#+\s+(.+)/m);
+      parsed.goal = goalMatch ? goalMatch[1].trim() : clampText(raw, 240);
+      parsed.title = titleMatch ? titleMatch[1].trim() : path.basename(filePath, ext);
+    }
+
+    const specDraft = createSpecDraft({
+      threadId: thread.id,
+      workflowId: thread.workflowPresetId || "scaffold-app",
+      status: "draft",
+      title: parsed.title || inferSpecTitle(raw),
+      goal: parsed.goal || clampText(raw, 240),
+      stack: parsed.stack || [],
+      constraints: parsed.constraints || [],
+      deliverables: parsed.deliverables || [],
+      acceptance_criteria: parsed.acceptance_criteria || [],
+      validation_plan: parsed.validation_plan || [],
+      implementation_plan: parsed.implementation_plan || [],
+      raw,
+      generatedFrom: `file:${filePath}`,
+      model: "uploaded"
+    });
+
+    this.saveSpecDraft(project, thread, specDraft);
+    // Also inject a user message so the spec shows in chat history
+    thread.messages.push({
+      id: makeId("user"),
+      role: "user",
+      content: `[Uploaded spec: ${path.basename(filePath)}]\n\n${clampText(raw, 8000)}`,
+      mode: thread.mode,
+      executionMode: thread.executionMode,
+      createdAt: Date.now()
+    });
+    this.lastStatus = `Spec loaded from ${path.basename(filePath)}`;
+    await this.persistState();
+    this.postState();
+    return true;
+  }
+
   async useMessageAsSpec(payload) {
     const project = this.getActiveProject();
     const thread = this.getActiveThread(project);
@@ -1991,7 +2904,7 @@ class VSWirksController {
             }
           : item
       );
-      run.status = decision === "deny" ? "running" : "running";
+      run.status = decision === "deny" ? "denied_resuming" : "running";
       this.recordRunCheckpoint(project, run, createRunCheckpoint({
         runId: run.id,
         label: `${decision === "deny" ? "Denied" : "Approved"} ${this.pendingApproval.relativePath}`,
@@ -2450,7 +3363,8 @@ class VSWirksController {
       pending: Boolean(this.abortController),
       promptRefining: this.promptRefining,
       statusText: this.lastStatus,
-      pendingApproval: this.pendingApproval
+      pendingApproval: this.pendingApproval,
+      recentFileChanges: this.recentFileChanges || []
     });
   }
 

@@ -1,51 +1,123 @@
 <svg width="1024" height="1024" viewBox="0 0 1024 1024" fill="none" xmlns="http://www.w3.org/2000/svg">
   <defs>
-    <linearGradient id="bg" x1="128" y1="96" x2="912" y2="928" gradientUnits="userSpaceOnUse">
-      <stop offset="0" stop-color="#11203A"/>
-      <stop offset="0.48" stop-color="#141734"/>
-      <stop offset="1" stop-color="#090D18"/>
+    <linearGradient id="bg" x1="0" y1="0" x2="1024" y2="1024" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#0d1a2e"/>
+      <stop offset="0.5" stop-color="#0a0e1a"/>
+      <stop offset="1" stop-color="#060a14"/>
     </linearGradient>
-    <linearGradient id="frame" x1="208" y1="208" x2="790" y2="676" gradientUnits="userSpaceOnUse">
-      <stop offset="0" stop-color="#D9ECFF"/>
-      <stop offset="0.5" stop-color="#98D7FF"/>
-      <stop offset="1" stop-color="#FFC586"/>
+    <linearGradient id="vGrad" x1="180" y1="280" x2="440" y2="740" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#4dc9f6"/>
+      <stop offset="0.45" stop-color="#2196ff"/>
+      <stop offset="1" stop-color="#1565c0"/>
     </linearGradient>
-    <linearGradient id="beam" x1="392" y1="688" x2="770" y2="252" gradientUnits="userSpaceOnUse">
-      <stop offset="0" stop-color="#FFB574"/>
-      <stop offset="0.5" stop-color="#72D7FF"/>
-      <stop offset="1" stop-color="#8D86FF"/>
+    <linearGradient id="sGrad" x1="540" y1="280" x2="800" y2="740" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#e8eef5"/>
+      <stop offset="0.35" stop-color="#b0c4de"/>
+      <stop offset="0.7" stop-color="#8aa8c7"/>
+      <stop offset="1" stop-color="#c8d8e8"/>
     </linearGradient>
-    <radialGradient id="haloA" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(276 214) rotate(39.8) scale(410 287)">
-      <stop stop-color="#67D1FF" stop-opacity="0.48"/>
-      <stop offset="1" stop-color="#67D1FF" stop-opacity="0"/>
+    <linearGradient id="wingGrad" x1="120" y1="360" x2="904" y2="360" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#1565c0" stop-opacity="0.4"/>
+      <stop offset="0.35" stop-color="#2196ff" stop-opacity="0.8"/>
+      <stop offset="0.65" stop-color="#4dc9f6" stop-opacity="0.8"/>
+      <stop offset="1" stop-color="#00bfff" stop-opacity="0.3"/>
+    </linearGradient>
+    <linearGradient id="circuitGrad" x1="80" y1="480" x2="944" y2="480" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#2196ff" stop-opacity="0.05"/>
+      <stop offset="0.25" stop-color="#2196ff" stop-opacity="0.5"/>
+      <stop offset="0.75" stop-color="#00bfff" stop-opacity="0.5"/>
+      <stop offset="1" stop-color="#00bfff" stop-opacity="0.05"/>
+    </linearGradient>
+    <radialGradient id="centerGlow" cx="480" cy="480" r="340" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#2196ff" stop-opacity="0.22"/>
+      <stop offset="0.5" stop-color="#1565c0" stop-opacity="0.06"/>
+      <stop offset="1" stop-color="#0a0e1a" stop-opacity="0"/>
     </radialGradient>
-    <radialGradient id="haloB" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(770 798) rotate(-146.2) scale(364 278)">
-      <stop stop-color="#FF9E5F" stop-opacity="0.5"/>
-      <stop offset="1" stop-color="#FF9E5F" stop-opacity="0"/>
+    <radialGradient id="floorGlow" cx="512" cy="830" r="280" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#2196ff" stop-opacity="0.12"/>
+      <stop offset="1" stop-color="#0a0e1a" stop-opacity="0"/>
     </radialGradient>
-    <filter id="glow" x="256" y="132" width="612" height="628" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
-      <feFlood flood-opacity="0" result="BackgroundImageFix"/>
-      <feBlend mode="normal" in="SourceGraphic" in2="BackgroundImageFix" result="shape"/>
-      <feGaussianBlur stdDeviation="18" result="effect1_foregroundBlur"/>
+    <filter id="dotGlow" x="-100%" y="-100%" width="300%" height="300%">
+      <feGaussianBlur in="SourceGraphic" stdDeviation="5"/>
+    </filter>
+    <filter id="outerGlow" x="-10%" y="-10%" width="120%" height="120%">
+      <feGaussianBlur in="SourceAlpha" stdDeviation="10" result="blur"/>
+      <feFlood flood-color="#2196ff" flood-opacity="0.3" result="color"/>
+      <feComposite in="color" in2="blur" operator="in" result="glow"/>
+      <feMerge>
+        <feMergeNode in="glow"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
     </filter>
   </defs>
 
-  <rect x="64" y="64" width="896" height="896" rx="248" fill="url(#bg)"/>
-  <rect x="64" y="64" width="896" height="896" rx="248" stroke="#FFFFFF" stroke-opacity="0.18" stroke-width="10"/>
-  <ellipse cx="276" cy="214" rx="308" ry="216" fill="url(#haloA)"/>
-  <ellipse cx="770" cy="798" rx="278" ry="212" fill="url(#haloB)"/>
+  <!-- Background -->
+  <rect width="1024" height="1024" rx="228" fill="url(#bg)"/>
+  <rect x="3" y="3" width="1018" height="1018" rx="226" fill="none" stroke="#ffffff" stroke-opacity="0.07" stroke-width="1.5"/>
 
-  <g filter="url(#glow)">
-    <path d="M422 684L756 300" stroke="url(#beam)" stroke-width="48" stroke-linecap="round"/>
+  <!-- Ambient glows -->
+  <ellipse cx="480" cy="480" rx="360" ry="300" fill="url(#centerGlow)"/>
+  <ellipse cx="512" cy="830" rx="300" ry="120" fill="url(#floorGlow)"/>
+
+  <!-- Circuit traces -->
+  <g opacity="0.45">
+    <path d="M70 430 H230 L260 400" stroke="url(#circuitGrad)" stroke-width="1.5" fill="none" stroke-linecap="round"/>
+    <path d="M50 470 H210 L240 450" stroke="url(#circuitGrad)" stroke-width="1" fill="none" stroke-linecap="round"/>
+    <path d="M90 510 H250" stroke="url(#circuitGrad)" stroke-width="1.5" fill="none" stroke-linecap="round"/>
+    <path d="M110 550 H220 L250 530" stroke="url(#circuitGrad)" stroke-width="1" fill="none" stroke-linecap="round"/>
+    <path d="M764 400 L794 430 H954" stroke="url(#circuitGrad)" stroke-width="1.5" fill="none" stroke-linecap="round"/>
+    <path d="M784 450 L814 470 H974" stroke="url(#circuitGrad)" stroke-width="1" fill="none" stroke-linecap="round"/>
+    <path d="M774 510 H934" stroke="url(#circuitGrad)" stroke-width="1.5" fill="none" stroke-linecap="round"/>
+    <path d="M774 530 L804 550 H914" stroke="url(#circuitGrad)" stroke-width="1" fill="none" stroke-linecap="round"/>
   </g>
 
-  <rect x="214" y="222" width="232" height="436" rx="58" fill="#FFFFFF" fill-opacity="0.03" stroke="url(#frame)" stroke-width="42"/>
-  <rect x="494" y="222" width="232" height="232" rx="58" fill="#FFFFFF" fill-opacity="0.03" stroke="url(#frame)" stroke-width="42"/>
-  <rect x="494" y="502" width="292" height="156" rx="54" fill="#FFFFFF" fill-opacity="0.03" stroke="url(#frame)" stroke-width="42"/>
+  <!-- Circuit dots with glow -->
+  <g filter="url(#dotGlow)">
+    <circle cx="70" cy="430" r="3.5" fill="#4dc9f6"/>
+    <circle cx="954" cy="430" r="3.5" fill="#4dc9f6"/>
+    <circle cx="50" cy="470" r="2.5" fill="#00bfff"/>
+    <circle cx="974" cy="470" r="2.5" fill="#00bfff"/>
+    <circle cx="90" cy="510" r="2" fill="#2196ff"/>
+    <circle cx="934" cy="510" r="2" fill="#2196ff"/>
+  </g>
+  <circle cx="70" cy="430" r="2.5" fill="#4dc9f6"/>
+  <circle cx="954" cy="430" r="2.5" fill="#4dc9f6"/>
+  <circle cx="50" cy="470" r="2" fill="#00bfff"/>
+  <circle cx="974" cy="470" r="2" fill="#00bfff"/>
+  <circle cx="90" cy="510" r="1.5" fill="#2196ff"/>
+  <circle cx="934" cy="510" r="1.5" fill="#2196ff"/>
 
-  <path d="M446 508H494" stroke="url(#frame)" stroke-width="42" stroke-linecap="round"/>
-  <path d="M494 454V502" stroke="url(#frame)" stroke-width="42" stroke-linecap="round"/>
+  <!-- Wing swoosh -->
+  <path d="M130 390 Q320 320 500 340 Q680 320 870 390 Q740 355 500 365 Q260 355 130 390Z" fill="url(#wingGrad)" opacity="0.4"/>
+  <path d="M170 400 Q330 350 500 360 Q670 350 830 400" stroke="url(#wingGrad)" stroke-width="1.8" fill="none" opacity="0.6"/>
 
-  <circle cx="760" cy="238" r="22" fill="#FFB574"/>
-  <circle cx="810" cy="278" r="10" fill="#72D7FF"/>
+  <!-- V letter: bold, clean -->
+  <g filter="url(#outerGlow)">
+    <path d="M200 290 L395 740 L590 290 L500 290 L395 590 L290 290 Z" fill="url(#vGrad)"/>
+  </g>
+
+  <!-- S letter: bold, clean -->
+  <g filter="url(#outerGlow)">
+    <path d="
+      M780 340 L780 310
+      Q775 280 745 265 Q710 250 670 255 Q625 262 610 290
+      Q595 320 615 350 Q630 375 670 395
+      L730 425
+      Q768 445 775 480 Q782 520 760 548
+      Q735 578 690 582 Q645 584 620 562 Q605 548 598 530
+      L598 530 L530 555
+      Q545 600 580 628 Q620 655 670 660
+      Q730 660 775 632 Q820 600 828 548
+      Q835 495 805 460 Q780 432 740 415
+      L680 388
+      Q648 374 638 350 Q630 328 640 308
+      Q655 282 685 280 Q715 278 730 295 Q738 306 740 320
+      Z
+    " fill="url(#sGrad)"/>
+  </g>
+
+  <!-- Accent dots -->
+  <circle cx="820" cy="268" r="5.5" fill="#4dc9f6" opacity="0.85"/>
+  <circle cx="848" cy="298" r="2.8" fill="#00bfff" opacity="0.65"/>
+  <circle cx="178" cy="740" r="3.5" fill="#2196ff" opacity="0.55"/>
 </svg>

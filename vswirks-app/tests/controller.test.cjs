@@ -314,11 +314,11 @@ test("reviewGeneratedFiles opens a review chat seeded with the changed files", a
   assert.match(sendPayload.prompt, /tests\/app\.test\.js/);
 });
 
-test("default model roles prefer MLX for planning and devstral for act", () => {
-  const roles = createDefaultModelRoles("mlx/Qwen3.5-27B-Claude-4.6-Opus-Distilled-MLX-6bit");
+test("default model roles use qwen-coder for building and devstral for act", () => {
+  const roles = createDefaultModelRoles("qwen2.5-coder:14b-instruct");
 
-  assert.equal(roles.builder, "mlx/Qwen3.5-27B-Claude-4.6-Opus-Distilled-MLX-6bit");
-  assert.equal(roles.reviewer, "mlx/Qwen3.5-27B-Claude-4.6-Opus-Distilled-MLX-6bit");
+  assert.equal(roles.builder, "qwen2.5-coder:14b-instruct");
+  assert.equal(roles.reviewer, "qwen2.5-coder:14b-instruct");
   assert.equal(roles.editor, "devstral-small-2");
 });
 
@@ -326,8 +326,8 @@ test("resolveModelForTask routes act mode to the editor role and review to revie
   const settings = {
     modelRoles: {
       chat: "llama3.3-8b-thinking:q6",
-      builder: "mlx/Qwen3.5-27B-Claude-4.6-Opus-Distilled-MLX-6bit",
-      reviewer: "mlx/Qwen3.5-27B-Claude-4.6-Opus-Distilled-MLX-6bit",
+      builder: "qwen2.5-coder:14b-instruct",
+      reviewer: "qwen2.5-coder:14b-instruct",
       refiner: "llama3.3-8b-thinking:q6",
       editor: "devstral-small-2"
     }
@@ -349,22 +349,22 @@ test("resolveModelForTask routes act mode to the editor role and review to revie
       executionMode: "plan",
       purpose: "conversation"
     }),
-    "mlx/Qwen3.5-27B-Claude-4.6-Opus-Distilled-MLX-6bit"
+    "qwen2.5-coder:14b-instruct"
   );
 });
 
-test("normalizeModelRoles migrates the legacy qwen act default to devstral", () => {
+test("normalizeModelRoles migrates the legacy OOM 27B model to default", () => {
   const roles = normalizeModelRoles(
     {
       chat: "llama3.3-8b-thinking:q6",
       refiner: "llama3.3-8b-thinking:q6",
-      editor: "qwen2.5-coder:14b-instruct"
+      editor: "mlx/Qwen3.5-27B-Claude-4.6-Opus-Distilled-MLX-6bit"
     },
-    "qwen2.5-coder:14b-instruct"
+    "mlx/Qwen3.5-27B-Claude-4.6-Opus-Distilled-MLX-6bit"
   );
 
-  assert.equal(roles.builder, "mlx/Qwen3.5-27B-Claude-4.6-Opus-Distilled-MLX-6bit");
-  assert.equal(roles.reviewer, "mlx/Qwen3.5-27B-Claude-4.6-Opus-Distilled-MLX-6bit");
+  assert.equal(roles.builder, "qwen2.5-coder:14b-instruct");
+  assert.equal(roles.reviewer, "qwen2.5-coder:14b-instruct");
   assert.equal(roles.editor, "devstral-small-2");
 });
 

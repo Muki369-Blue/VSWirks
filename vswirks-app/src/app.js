@@ -1,7 +1,103 @@
 (function () {
   const api = window.vswirks;
-  const persisted = JSON.parse(localStorage.getItem("vswirks-ui") || "{}");
+  let persisted = {};
+  try { persisted = JSON.parse(localStorage.getItem("vswirks-ui") || "{}"); } catch { persisted = {}; }
   const AUTO_MODEL_VALUE = "__auto__";
+
+  function escapeHtml(text) {
+    const div = document.createElement("div");
+    div.textContent = text;
+    return div.innerHTML;
+  }
+
+  // ── Syntax highlighting (inline, no dependencies) ────
+  const SYN_KEYWORDS = new Set([
+    "abstract","async","await","break","case","catch","class","const","continue",
+    "debugger","default","delete","do","else","enum","export","extends","false",
+    "finally","for","from","function","if","import","in","instanceof","let","new",
+    "null","of","return","static","super","switch","this","throw","true","try",
+    "typeof","undefined","var","void","while","with","yield",
+    "def","elif","except","lambda","pass","raise","self","None","True","False",
+    "fn","impl","pub","mod","use","crate","mut","struct","trait","match","loop","move"
+  ]);
+  const SYN_BUILTINS = new Set([
+    "console","document","window","require","module","exports","process",
+    "Array","Object","String","Number","Boolean","Map","Set","Promise","Error",
+    "Math","JSON","Date","RegExp","parseInt","parseFloat","setTimeout","setInterval",
+    "print","len","range","list","dict","tuple","int","str","float","type","open",
+    "println","vec","Box","Option","Result","Some","Ok","Err"
+  ]);
+
+  function highlightCode(code, lang) {
+    // Tokenize and highlight with spans
+    let result = code;
+    // Strings (double, single, backtick)
+    result = result.replace(/(["'`])(?:(?!\1|\\).|\\.)*?\1/g, '<span class="syn-str">$&</span>');
+    // Comments (// and #)
+    result = result.replace(/(\/\/.*?$|#(?!include|define|if).*?$)/gm, '<span class="syn-cmt">$&</span>');
+    // Numbers
+    result = result.replace(/\b(\d+\.?\d*(?:e[+-]?\d+)?|0x[0-9a-fA-F]+)\b/g, '<span class="syn-num">$&</span>');
+    // Keywords and builtins (word boundary match)
+    result = result.replace(/\b([a-zA-Z_]\w*)\b/g, (match) => {
+      if (SYN_KEYWORDS.has(match)) return `<span class="syn-kw">${match}</span>`;
+      if (SYN_BUILTINS.has(match)) return `<span class="syn-bi">${match}</span>`;
+      return match;
+    });
+    // Decorators / annotations
+    result = result.replace(/@\w+/g, '<span class="syn-dec">$&</span>');
+    return result;
+  }
+
+  /** Lightweight Markdown → HTML (safe: all text is escaped first). */
+  function renderMarkdown(raw) {
+    const safe = escapeHtml(raw);
+    let html = safe;
+
+    // Fenced code blocks: ```lang\n...\n```
+    html = html.replace(/```(\w*)\n([\s\S]*?)```/g, (_m, lang, code) => {
+      const highlighted = highlightCode(code.trimEnd(), lang);
+      const langLabel = lang ? `<span class="code-lang">${lang}</span>` : "";
+      const copyBtn = `<button class="code-copy-btn" onclick="navigator.clipboard.writeText(this.closest('pre').querySelector('code').textContent).then(()=>{this.textContent='Copied!';setTimeout(()=>this.textContent='Copy',1500)})">Copy</button>`;
+      return `<pre class="md-code-block">${langLabel}${copyBtn}<code class="lang-${lang || "text"}">${highlighted}</code></pre>`;
+    });
+
+    // Inline code
+    html = html.replace(/`([^`\n]+)`/g, '<code class="md-inline-code">$1</code>');
+
+    // Headers (h1-h3)
+    html = html.replace(/^### (.+)$/gm, "<h4>$1</h4>");
+    html = html.replace(/^## (.+)$/gm, "<h3>$1</h3>");
+    html = html.replace(/^# (.+)$/gm, "<h2>$1</h2>");
+
+    // Bold / italic
+    html = html.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
+    html = html.replace(/\*(.+?)\*/g, "<em>$1</em>");
+
+    // Unordered lists (- item)
+    html = html.replace(/^- (.+)$/gm, "<li>$1</li>");
+    html = html.replace(/(<li>[\s\S]*?<\/li>)/g, "<ul>$1</ul>");
+    // Collapse adjacent <ul> tags
+    html = html.replace(/<\/ul>\s*<ul>/g, "");
+
+    // Ordered lists (1. item)
+    html = html.replace(/^\d+\. (.+)$/gm, "<li>$1</li>");
+
+    // Blockquotes
+    html = html.replace(/^&gt; (.+)$/gm, "<blockquote>$1</blockquote>");
+    html = html.replace(/<\/blockquote>\s*<blockquote>/g, "<br>");
+
+    // Horizontal rules
+    html = html.replace(/^---$/gm, "<hr>");
+
+    // Line breaks → paragraphs (double newline)
+    html = html.replace(/\n{2,}/g, "</p><p>");
+    html = `<p>${html}</p>`;
+    // Clean up empty paragraphs
+    html = html.replace(/<p>\s*<\/p>/g, "");
+
+    return html;
+  }
+
   const SpeechRecognitionConstructor =
     window.SpeechRecognition || window.webkitSpeechRecognition || null;
 
@@ -65,6 +161,66 @@
 
   const elements = {
     app: document.getElementById("app"),
+    viewStudio: document.getElementById("viewStudio"),
+    viewProjects: document.getElementById("viewProjects"),
+    viewModelLab: document.getElementById("viewModelLab"),
+    studioView: document.getElementById("studioView"),
+    studioMessages: document.getElementById("studioMessages"),
+    studioPrompt: document.getElementById("studioPrompt"),
+    studioSend: document.getElementById("studioSend"),
+    studioStatus: document.getElementById("studioStatus"),
+    studioDeepResearch: document.getElementById("studioDeepResearch"),
+    studioWebTools: document.getElementById("studioWebTools"),
+    studioQuickResponse: document.getElementById("studioQuickResponse"),
+    studioVoice: document.getElementById("studioVoice"),
+    studioVoiceTest: document.getElementById("studioVoiceTest"),
+    studioVoiceStop: document.getElementById("studioVoiceStop"),
+    studioVoiceInput: document.getElementById("studioVoiceInput"),
+    studioProjectList: document.getElementById("studioProjectList"),
+    studioNewProject: document.getElementById("studioNewProject"),
+    studioNewChat: document.getElementById("studioNewChat"),
+    studioProjectContext: document.getElementById("studioProjectContext"),
+    studioProjectLabel: document.getElementById("studioProjectLabel"),
+    studioClearProject: document.getElementById("studioClearProject"),
+    studioExport: document.getElementById("studioExport"),
+    studioImport: document.getElementById("studioImport"),
+    studioTemplateSelect: document.getElementById("studioTemplateSelect"),
+    studioGitPanel: document.getElementById("studioGitPanel"),
+    studioRefreshGit: document.getElementById("studioRefreshGit"),
+    studioSearch: document.getElementById("studioSearch"),
+    studioSearchResults: document.getElementById("studioSearchResults"),
+    studioIndexProject: document.getElementById("studioIndexProject"),
+    studioRagSearch: document.getElementById("studioRagSearch"),
+    studioFileChanges: document.getElementById("studioFileChanges"),
+    studioAutoContext: document.getElementById("studioAutoContext"),
+    studioGitFiles: document.getElementById("studioGitFiles"),
+    studioGitCommitRow: document.getElementById("studioGitCommitRow"),
+    studioGitMessage: document.getElementById("studioGitMessage"),
+    studioGitCommitBtn: document.getElementById("studioGitCommitBtn"),
+    studioGitBranchRow: document.getElementById("studioGitBranchRow"),
+    studioGitBranchSelect: document.getElementById("studioGitBranchSelect"),
+    studioGitCheckoutBtn: document.getElementById("studioGitCheckoutBtn"),
+    studioGitDiffPreview: document.getElementById("studioGitDiffPreview"),
+    studioGenerateImage: document.getElementById("studioGenerateImage"),
+    studioModelPanel: document.getElementById("studioModelPanel"),
+    studioRefreshModels: document.getElementById("studioRefreshModels"),
+    studioModelName: document.getElementById("studioModelName"),
+    studioPullModel: document.getElementById("studioPullModel"),
+    studioTabChat: document.getElementById("studioTabChat"),
+    studioTabTerminal: document.getElementById("studioTabTerminal"),
+    studioTabCompare: document.getElementById("studioTabCompare"),
+    studioTerminal: document.getElementById("studioTerminal"),
+    studioTerminalOutput: document.getElementById("studioTerminalOutput"),
+    studioTerminalInput: document.getElementById("studioTerminalInput"),
+    studioTerminalRun: document.getElementById("studioTerminalRun"),
+    studioCompare: document.getElementById("studioCompare"),
+    compareModelA: document.getElementById("compareModelA"),
+    compareModelB: document.getElementById("compareModelB"),
+    compareRun: document.getElementById("compareRun"),
+    compareHeaderA: document.getElementById("compareHeaderA"),
+    compareHeaderB: document.getElementById("compareHeaderB"),
+    compareResultA: document.getElementById("compareResultA"),
+    compareResultB: document.getElementById("compareResultB"),
     mode: document.getElementById("mode"),
     workflowPreset: document.getElementById("workflowPreset"),
     agentProfile: document.getElementById("agentProfile"),
@@ -89,6 +245,7 @@
     attachFile: document.getElementById("attachFile"),
     attachImage: document.getElementById("attachImage"),
     attachEditorSelection: document.getElementById("attachEditorSelection"),
+    uploadSpec: document.getElementById("uploadSpec"),
     stop: document.getElementById("stop"),
     vibeHold: document.getElementById("vibeHold"),
     vibeClear: document.getElementById("vibeClear"),
@@ -223,6 +380,11 @@
   let draftSyncHandle = null;
 
   let drawerTab = persisted.drawerTab || "spec";
+  let activeView = "studio";
+  const studioFeatures = { deepResearch: false, webTools: false, quickResponse: true };
+  let studioVoiceId = "";
+  let studioLastSpokenId = "";
+
   const progress = {
     startedAt: 0,
     timer: null,
@@ -249,13 +411,31 @@
     elements.app.classList.add("focus-chat");
   }
 
+  let isFirstState = true;
+  let lastActiveProjectId = "";
+
   api.onState((payload) => {
     const wasPending = state.pending;
+    const prevProjectId = state.activeProjectId;
     state = {
       ...state,
       ...payload
     };
     hydratePromptDraftFromState();
+
+    // On first load: open Studio fresh, clear transient UI
+    if (isFirstState) {
+      isFirstState = false;
+      elements.prompt.value = "";
+      switchView("studio");
+    }
+
+    // Detect project switch → jump to most recent step
+    if (state.activeProjectId && state.activeProjectId !== prevProjectId && prevProjectId) {
+      navigateToProjectLatest();
+    }
+    lastActiveProjectId = state.activeProjectId || "";
+
     // Track progress transitions
     if (state.pending && !wasPending) {
       startProgress();
@@ -273,6 +453,19 @@
       state.statusText = payload.message;
       updateProgress(payload.message);
       renderStatus();
+    }
+    if (payload && payload.type === "abliterate-progress") {
+      const log = document.getElementById("labProgressLog");
+      if (log) {
+        log.textContent += payload.label + "\n";
+        log.scrollTop = log.scrollHeight;
+        const match = payload.label.match(/(\d+)\/(\d+)/);
+        if (match) {
+          const pct = Math.round((parseInt(match[1]) / parseInt(match[2])) * 100);
+          const fill = document.getElementById("labProgressFill");
+          if (fill) fill.style.width = pct + "%";
+        }
+      }
     }
   });
 
@@ -330,10 +523,632 @@
     return "Working";
   }
 
+  // ── Studio view ─────────────────────────────────────
+
+  function switchView(view) {
+    activeView = view;
+    elements.app.classList.toggle("view-studio", view === "studio");
+    elements.app.classList.toggle("view-projects", view === "projects");
+    elements.app.classList.toggle("view-modellab", view === "modellab");
+    elements.viewStudio.classList.toggle("active", view === "studio");
+    elements.viewProjects.classList.toggle("active", view === "projects");
+    elements.viewModelLab.classList.toggle("active", view === "modellab");
+    const modelLabView = document.getElementById("modelLabView");
+    if (modelLabView) modelLabView.style.display = view === "modellab" ? "" : "none";
+    if (view === "studio") {
+      renderStudioMessages();
+      requestAnimationFrame(() => elements.studioPrompt.focus());
+    } else if (view === "modellab") {
+      refreshLabModels(); refreshLabAbliterated(); refreshLabConfigs();
+    } else {
+      navigateToProjectLatest();
+    }
+  }
+
+  function renderStudioMessages() {
+    const history = state.activeProject ? state.activeProject.history || [] : [];
+    elements.studioMessages.innerHTML = "";
+
+    if (!history.length || history.every((m) => m.role === "system")) {
+      const welcome = document.createElement("div");
+      welcome.className = "studio-welcome";
+      welcome.innerHTML = [
+        "<h2>What are you working on?</h2>",
+        "<p>Your local-first dev companion. Ask anything — code questions, debugging, architecture, tooling. Everything runs on your machine.</p>",
+        '<div class="feature-hints">',
+        '<span class="hint">Deep Research</span>',
+        '<span class="hint">Web Tools</span>',
+        '<span class="hint">Quick Response</span>',
+        "</div>"
+      ].join("");
+      elements.studioMessages.appendChild(welcome);
+      return;
+    }
+
+    history.forEach((item) => {
+      if (item.role === "system" || item.role === "tool") return;
+      const card = document.createElement("div");
+      card.className = `message-card ${item.role}`;
+      const header = document.createElement("div");
+      header.className = "message-header";
+      header.textContent = item.role === "user" ? "You" : "Studio";
+      card.appendChild(header);
+      const body = document.createElement("div");
+      body.className = "message-body";
+      if (item.role === "assistant") {
+        body.innerHTML = renderMarkdown(item.content || "");
+      } else {
+        body.textContent = item.content || "";
+      }
+      card.appendChild(body);
+      if (item.role === "assistant" && !state.pending) {
+        const actions = document.createElement("div");
+        actions.className = "message-actions";
+        const copyBtn = document.createElement("button");
+        copyBtn.className = "ghost-button compact-button";
+        copyBtn.textContent = "Copy";
+        copyBtn.addEventListener("click", () => navigator.clipboard.writeText(item.content || ""));
+        actions.appendChild(copyBtn);
+        const speakBtn = document.createElement("button");
+        speakBtn.className = "ghost-button compact-button";
+        speakBtn.textContent = "Speak";
+        speakBtn.addEventListener("click", () => speakText(item.content || ""));
+        actions.appendChild(speakBtn);
+        card.appendChild(actions);
+      }
+      elements.studioMessages.appendChild(card);
+    });
+
+    // Auto-speak latest assistant response
+    const lastAssistant = [...history].reverse().find((m) => m.role === "assistant");
+    if (lastAssistant && lastAssistant.id !== studioLastSpokenId && !state.pending && studioVoiceId) {
+      studioLastSpokenId = lastAssistant.id;
+      speakText(lastAssistant.content || "");
+    }
+
+    requestAnimationFrame(() => {
+      elements.studioMessages.scrollTop = elements.studioMessages.scrollHeight;
+    });
+  }
+
+  function renderStudioProjects() {
+    elements.studioProjectList.innerHTML = "";
+    (state.projects || []).forEach((project) => {
+      const chip = document.createElement("button");
+      chip.className = `studio-project-chip${project.id === state.activeProjectId ? " active" : ""}`;
+      chip.type = "button";
+      chip.title = project.workspaceRoot || project.name;
+      chip.addEventListener("click", () => {
+        void api.invoke("vswirks:switchProject", { id: project.id });
+      });
+
+      const name = document.createElement("strong");
+      name.textContent = project.name;
+      chip.appendChild(name);
+
+      const root = document.createElement("div");
+      root.className = "meta path";
+      root.textContent = (project.workspaceRoot || "").replace(/^.*\//, "");
+      chip.appendChild(root);
+
+      const meta = document.createElement("div");
+      meta.className = "meta";
+      meta.textContent = project.currentRunStatus || `${project.threadCount} chat${project.threadCount !== 1 ? "s" : ""}`;
+      chip.appendChild(meta);
+
+      elements.studioProjectList.appendChild(chip);
+    });
+
+    // Project context banner
+    const active = state.activeProject;
+    if (active) {
+      elements.studioProjectContext.style.display = "";
+      elements.studioProjectLabel.textContent = `Chatting about: ${active.name}`;
+      elements.studioPrompt.placeholder = `Ask about ${active.name}…`;
+      refreshGitPanel();
+    } else {
+      elements.studioProjectContext.style.display = "none";
+      elements.studioPrompt.placeholder = "What are you working on?";
+      elements.studioGitPanel.innerHTML = '<span class="meta">Select a project</span>';
+    }
+  }
+
+  function renderStudioStatus() {
+    elements.studioStatus.textContent = state.statusText || "Ready";
+    elements.studioSend.disabled = state.pending || !elements.studioPrompt.value.trim();
+  }
+
+  // ── Prompt templates ─────────────────────────────
+
+  const PROMPT_TEMPLATES = [
+    { label: "Explain this code", prompt: "Explain the following code in detail, including what each section does and why:\n\n" },
+    { label: "Find bugs", prompt: "Review the following code for bugs, edge cases, and potential issues. List each problem and suggest a fix:\n\n" },
+    { label: "Write tests", prompt: "Write comprehensive unit tests for the following code. Cover happy paths, edge cases, and error conditions:\n\n" },
+    { label: "Refactor", prompt: "Refactor the following code for better readability and maintainability without changing behavior:\n\n" },
+    { label: "Add docs", prompt: "Add clear documentation comments to the following code. Explain parameters, return values, and behavior:\n\n" },
+    { label: "Optimize", prompt: "Analyze the following code for performance bottlenecks and suggest optimizations:\n\n" },
+    { label: "Security audit", prompt: "Perform a security audit on the following code. Identify vulnerabilities (XSS, injection, auth issues) and suggest fixes:\n\n" },
+    { label: "Architecture review", prompt: "Review the architecture of this project. Identify strengths, weaknesses, and suggest improvements:\n\n" },
+    { label: "Debug error", prompt: "I'm getting the following error. Help me understand the root cause and fix it:\n\n" },
+    { label: "API design", prompt: "Design a clean REST API for the following requirements. Include endpoints, methods, request/response schemas:\n\n" }
+  ];
+
+  function populatePromptTemplates() {
+    elements.studioTemplateSelect.innerHTML = '<option value="">Templates…</option>';
+    PROMPT_TEMPLATES.forEach((tpl, idx) => {
+      const opt = document.createElement("option");
+      opt.value = String(idx);
+      opt.textContent = tpl.label;
+      elements.studioTemplateSelect.appendChild(opt);
+    });
+  }
+
+  // ── Git panel (enhanced) ─────────────────────────
+
+  async function refreshGitPanel() {
+    const result = await api.invoke("vswirks:getGitStatus");
+    if (!result || !result.ok) {
+      elements.studioGitPanel.innerHTML = `<span class="meta">${escapeHtml(result && result.error ? result.error : "No git repo")}</span>`;
+      elements.studioGitFiles.innerHTML = "";
+      elements.studioGitCommitRow.style.display = "none";
+      elements.studioGitBranchRow.style.display = "none";
+      elements.studioGitDiffPreview.style.display = "none";
+      return;
+    }
+    const lines = [
+      `<div class="git-branch">${escapeHtml(result.branch)}</div>`,
+      `<div class="git-changes meta">${result.changes} change${result.changes !== 1 ? "s" : ""}</div>`
+    ];
+    if (result.recentCommits.length) {
+      lines.push('<div class="git-log">');
+      result.recentCommits.slice(0, 5).forEach((c) => {
+        lines.push(`<div class="git-commit meta">${escapeHtml(c)}</div>`);
+      });
+      lines.push("</div>");
+    }
+    elements.studioGitPanel.innerHTML = lines.join("");
+
+    // Render changed files with stage/unstage toggle
+    elements.studioGitFiles.innerHTML = "";
+    if (result.statusLines && result.statusLines.length) {
+      elements.studioGitCommitRow.style.display = "";
+      result.statusLines.slice(0, 20).forEach((line) => {
+        const indexStatus = line.charAt(0);
+        const workStatus = line.charAt(1);
+        const filePath = line.slice(3).trim();
+        const isStaged = indexStatus !== " " && indexStatus !== "?";
+
+        const row = document.createElement("div");
+        row.className = "git-file-row";
+        row.title = filePath;
+
+        const statusBadge = document.createElement("span");
+        statusBadge.className = `git-file-status ${isStaged ? "staged" : "unstaged"}`;
+        statusBadge.textContent = isStaged ? indexStatus : (workStatus === "?" ? "?" : workStatus);
+        row.appendChild(statusBadge);
+
+        const name = document.createElement("span");
+        name.className = "git-file-name";
+        name.textContent = filePath;
+        name.addEventListener("click", () => showGitDiff(filePath));
+        row.appendChild(name);
+
+        const toggleBtn = document.createElement("button");
+        toggleBtn.className = "ghost-button compact-button git-stage-btn";
+        toggleBtn.textContent = isStaged ? "Unstage" : "Stage";
+        toggleBtn.addEventListener("click", async () => {
+          if (isStaged) {
+            await api.invoke("vswirks:gitUnstage", { files: [filePath] });
+          } else {
+            await api.invoke("vswirks:gitStage", { files: [filePath] });
+          }
+          refreshGitPanel();
+        });
+        row.appendChild(toggleBtn);
+
+        elements.studioGitFiles.appendChild(row);
+      });
+    } else {
+      elements.studioGitCommitRow.style.display = "none";
+    }
+
+    // Branch switcher
+    const branchResult = await api.invoke("vswirks:gitBranches");
+    if (branchResult && branchResult.ok && branchResult.branches.length > 1) {
+      elements.studioGitBranchRow.style.display = "";
+      elements.studioGitBranchSelect.innerHTML = "";
+      branchResult.branches.forEach((b) => {
+        const opt = document.createElement("option");
+        opt.value = b.name;
+        opt.textContent = b.name;
+        if (b.current) opt.selected = true;
+        elements.studioGitBranchSelect.appendChild(opt);
+      });
+    } else {
+      elements.studioGitBranchRow.style.display = "none";
+    }
+  }
+
+  async function showGitDiff(filePath) {
+    const result = await api.invoke("vswirks:gitDiff", { file: filePath });
+    if (!result || !result.ok) {
+      elements.studioGitDiffPreview.style.display = "none";
+      return;
+    }
+    const diff = (result.staged || "") + (result.unstaged || "");
+    if (!diff.trim()) {
+      elements.studioGitDiffPreview.style.display = "none";
+      return;
+    }
+    elements.studioGitDiffPreview.style.display = "";
+    elements.studioGitDiffPreview.innerHTML = `<pre class="md-code-block"><code class="lang-diff">${highlightDiff(escapeHtml(diff.slice(0, 5000)))}</code></pre>`;
+  }
+
+  function highlightDiff(text) {
+    return text.split("\n").map((line) => {
+      if (line.startsWith("+")) return `<span class="diff-add">${line}</span>`;
+      if (line.startsWith("-")) return `<span class="diff-del">${line}</span>`;
+      if (line.startsWith("@@")) return `<span class="diff-hunk">${line}</span>`;
+      return line;
+    }).join("\n");
+  }
+
+  // ── Model panel ──────────────────────────────────
+
+  async function refreshModelPanel() {
+    const models = await api.invoke("vswirks:listOllamaModels");
+    if (!Array.isArray(models) || !models.length) {
+      elements.studioModelPanel.innerHTML = '<span class="meta">No models found</span>';
+      return;
+    }
+    elements.studioModelPanel.innerHTML = "";
+    models.forEach((m) => {
+      const row = document.createElement("div");
+      row.className = "model-row";
+      const label = document.createElement("span");
+      label.className = "model-name";
+      label.textContent = m.name;
+      label.title = `${m.size} — ${m.modified}`;
+      row.appendChild(label);
+      const del = document.createElement("button");
+      del.className = "icon-btn model-delete";
+      del.textContent = "×";
+      del.title = `Delete ${m.name}`;
+      del.addEventListener("click", async () => {
+        if (!confirm(`Delete model "${m.name}"?`)) return;
+        const result = await api.invoke("vswirks:deleteOllamaModel", { name: m.name });
+        if (result && result.ok) refreshModelPanel();
+      });
+      row.appendChild(del);
+      elements.studioModelPanel.appendChild(row);
+    });
+  }
+
+  // ── File changes ──────────────────────────────────
+
+  function renderFileChanges() {
+    const changes = state.recentFileChanges || [];
+    if (!changes.length) {
+      elements.studioFileChanges.innerHTML = '<span class="meta">No recent changes</span>';
+      return;
+    }
+    elements.studioFileChanges.innerHTML = "";
+    changes.slice(0, 8).forEach((c) => {
+      const row = document.createElement("div");
+      row.className = "file-change-row";
+      row.title = c.file;
+      const icon = c.type === "rename" ? "~" : c.type === "change" ? "M" : "+";
+      row.innerHTML = `<span class="file-change-icon">${icon}</span><span class="file-change-name">${escapeHtml(c.file)}</span>`;
+      elements.studioFileChanges.appendChild(row);
+    });
+  }
+
+  // ── RAG search ──────────────────────────────────
+
+  async function indexProject() {
+    elements.studioIndexProject.disabled = true;
+    elements.studioIndexProject.textContent = "Indexing…";
+    const result = await api.invoke("vswirks:indexProject", {});
+    elements.studioIndexProject.disabled = false;
+    elements.studioIndexProject.textContent = "Index";
+    if (result && result.ok) {
+      elements.studioSearchResults.innerHTML = `<div class="meta">Indexed ${result.files} files, ${result.chunks} chunks</div>`;
+    } else {
+      elements.studioSearchResults.innerHTML = `<div class="meta" style="color:var(--bad)">${escapeHtml(result ? result.error : "Failed")}</div>`;
+    }
+  }
+
+  async function ragSearch() {
+    const query = elements.studioSearch.value.trim();
+    if (!query) return;
+    elements.studioSearchResults.innerHTML = '<div class="meta">Searching…</div>';
+    const result = await api.invoke("vswirks:ragSearch", { query });
+    if (!result || !result.ok) {
+      elements.studioSearchResults.innerHTML = `<div class="meta" style="color:var(--bad)">${escapeHtml(result ? result.error : "Failed")}</div>`;
+      return;
+    }
+    if (!result.results.length) {
+      elements.studioSearchResults.innerHTML = '<div class="meta">No results</div>';
+      return;
+    }
+    elements.studioSearchResults.innerHTML = "";
+    result.results.forEach((r) => {
+      const row = document.createElement("div");
+      row.className = "search-result-row";
+      row.innerHTML = `<strong>${escapeHtml(r.file)}:${r.startLine}</strong><span class="meta">${r.score ? ` (${(r.score * 100).toFixed(0)}%)` : ""}</span><pre class="search-result-snippet">${escapeHtml(r.text.slice(0, 200))}</pre>`;
+      elements.studioSearchResults.appendChild(row);
+    });
+  }
+
+  // ── Auto-context ────────────────────────────────
+
+  let autoContextEnabled = persisted.autoContext || false;
+
+  function getAutoContextSnippet() {
+    if (!autoContextEnabled) return "";
+    const changes = state.recentFileChanges || [];
+    if (!changes.length) return "";
+    return "\n\n[Auto-context: recently changed files]\n" + changes.slice(0, 5).map((c) => `- ${c.file} (${c.type})`).join("\n");
+  }
+
+  // ── Image generation ────────────────────────────
+
+  async function generateImage() {
+    const prompt = elements.studioPrompt.value.trim();
+    if (!prompt) { alert("Enter an image description first"); return; }
+
+    elements.studioGenerateImage.disabled = true;
+    elements.studioStatus.textContent = "Generating image…";
+
+    const result = await api.invoke("vswirks:generateImage", { prompt });
+
+    elements.studioGenerateImage.disabled = false;
+    elements.studioStatus.textContent = "Ready";
+
+    if (result && result.ok) {
+      // Show the generated image inline as a chat message
+      const imgCard = document.createElement("div");
+      imgCard.className = "message-card assistant";
+      imgCard.innerHTML = `<div class="message-header">Studio</div><div class="message-body"><p><em>Generated image for: "${escapeHtml(prompt)}"</em></p><img src="file://${escapeHtml(result.path)}" class="generated-image" alt="Generated image" /></div>`;
+      elements.studioMessages.appendChild(imgCard);
+      elements.studioMessages.scrollTop = elements.studioMessages.scrollHeight;
+    } else {
+      alert(result ? result.error : "Image generation failed");
+    }
+  }
+
+  // ── Studio tab switching ──────────────────────────
+
+  let activeStudioPanel = "chat";
+
+  function switchStudioPanel(panel) {
+    activeStudioPanel = panel;
+    document.querySelectorAll(".studio-tab").forEach((btn) => {
+      btn.classList.toggle("active", btn.dataset.panel === panel);
+    });
+    document.querySelectorAll(".studio-panel").forEach((el) => {
+      el.style.display = el.dataset.panel === panel ? "" : "none";
+    });
+  }
+
+  // ── Terminal ─────────────────────────────────────
+
+  async function runTerminalCommand() {
+    const command = elements.studioTerminalInput.value.trim();
+    if (!command) return;
+
+    const entry = document.createElement("div");
+    entry.className = "terminal-entry";
+    entry.innerHTML = `<span class="terminal-cmd">$ ${escapeHtml(command)}</span>`;
+    elements.studioTerminalOutput.appendChild(entry);
+    elements.studioTerminalInput.value = "";
+
+    const result = await api.invoke("vswirks:runCommand", { command });
+    const output = document.createElement("pre");
+    output.className = "terminal-result";
+    output.textContent = result.output || result.error || "(no output)";
+    if (!result.ok) output.classList.add("terminal-error");
+    entry.appendChild(output);
+    elements.studioTerminalOutput.scrollTop = elements.studioTerminalOutput.scrollHeight;
+  }
+
+  // ── Model A/B compare ───────────────────────────
+
+  function populateCompareModels() {
+    const models = state.models || [];
+    [elements.compareModelA, elements.compareModelB].forEach((sel, idx) => {
+      sel.innerHTML = "";
+      models.forEach((m) => {
+        const opt = document.createElement("option");
+        opt.value = m.id || m;
+        opt.textContent = m.id || m;
+        sel.appendChild(opt);
+      });
+      // Default second model to a different one if possible
+      if (idx === 1 && models.length > 1) sel.selectedIndex = 1;
+    });
+  }
+
+  async function runModelComparison() {
+    const prompt = elements.studioPrompt.value.trim();
+    if (!prompt) { alert("Enter a prompt first"); return; }
+    const modelA = elements.compareModelA.value;
+    const modelB = elements.compareModelB.value;
+    if (!modelA || !modelB) return;
+
+    elements.compareRun.disabled = true;
+    elements.compareRun.textContent = "Comparing…";
+    elements.compareHeaderA.textContent = modelA;
+    elements.compareHeaderB.textContent = modelB;
+    elements.compareResultA.innerHTML = "<em>Loading…</em>";
+    elements.compareResultB.innerHTML = "<em>Loading…</em>";
+
+    const result = await api.invoke("vswirks:compareModels", { prompt, modelA, modelB });
+
+    if (result && result.ok) {
+      elements.compareResultA.innerHTML = result.modelA.error
+        ? `<span class="terminal-error">${escapeHtml(result.modelA.error)}</span>`
+        : renderMarkdown(result.modelA.content || "(empty)");
+      elements.compareResultB.innerHTML = result.modelB.error
+        ? `<span class="terminal-error">${escapeHtml(result.modelB.error)}</span>`
+        : renderMarkdown(result.modelB.content || "(empty)");
+    } else {
+      elements.compareResultA.textContent = result ? result.error : "Failed";
+      elements.compareResultB.textContent = "";
+    }
+
+    elements.compareRun.disabled = false;
+    elements.compareRun.textContent = "Compare";
+  }
+
+  function studioSendPrompt() {
+    const rawPrompt = elements.studioPrompt.value.trim();
+    if (!rawPrompt || state.pending) return;
+
+    const autoContext = getAutoContextSnippet();
+    const prompt = rawPrompt + autoContext;
+
+    const features = [];
+    if (studioFeatures.deepResearch) features.push("deep-research");
+    if (studioFeatures.webTools) features.push("web-tools");
+    if (studioFeatures.quickResponse) features.push("quick-response");
+
+    void api.invoke("vswirks:sendPrompt", {
+      prompt,
+      mode: "chat",
+      executionMode: "plan",
+      workflowPresetId: "freeform",
+      agentProfileId: "",
+      model: getRequestedModel(),
+      studioMode: true,
+      studioFeatures: features
+    });
+    elements.studioPrompt.value = "";
+  }
+
+  // ── Voice synthesis (Kokoro TTS — emotional, human-sounding) ──
+
+  // 6 curated voice personas powered by Kokoro TTS (82M param model)
+  // Each maps to a specific Kokoro voice trained on real speech data
+  const VOICE_PERSONAS = [
+    { name: "Zola",    desc: "Warm, confident (Female)",      kokoroVoice: "af_heart" },
+    { name: "Mei",     desc: "Clear, precise (Female)",       kokoroVoice: "af_bella" },
+    { name: "Claire",  desc: "Friendly, expressive (Female)", kokoroVoice: "bf_emma" },
+    { name: "Priya",   desc: "Articulate, composed (Female)", kokoroVoice: "af_nicole" },
+    { name: "Marcus",  desc: "Deep, steady (Male)",           kokoroVoice: "am_michael" },
+    { name: "James",   desc: "Energetic, clear (Male)",       kokoroVoice: "am_puck" }
+  ];
+
+  let currentAudioEl = null;
+
+  function populateStudioVoices() {
+    elements.studioVoice.innerHTML = '<option value="">Off</option>';
+    VOICE_PERSONAS.forEach((persona) => {
+      const opt = document.createElement("option");
+      opt.value = persona.name;
+      opt.textContent = `${persona.name} — ${persona.desc}`;
+      elements.studioVoice.appendChild(opt);
+    });
+  }
+
+  function stopSpeaking() {
+    if (currentAudioEl) {
+      currentAudioEl.pause();
+      currentAudioEl.src = "";
+      currentAudioEl = null;
+    }
+    if (typeof speechSynthesis !== "undefined") {
+      speechSynthesis.cancel();
+    }
+    elements.studioStatus.textContent = "Ready";
+  }
+
+  async function speakText(text) {
+    if (!studioVoiceId || !text) return;
+    stopSpeaking();
+
+    const persona = VOICE_PERSONAS.find((p) => p.name === studioVoiceId);
+    if (!persona) return;
+
+    // Try Kokoro TTS via IPC — returns a WAV file path
+    try {
+      elements.studioStatus.textContent = "Generating voice…";
+      const result = await api.invoke("vswirks:synthesizeSpeech", {
+        text: text.slice(0, 3000),
+        voice: persona.kokoroVoice
+      });
+
+      if (result && result.ok && result.wavPath) {
+        const audio = new Audio(`file://${result.wavPath}`);
+        audio.onended = () => { currentAudioEl = null; elements.studioStatus.textContent = "Ready"; };
+        audio.onerror = () => { currentAudioEl = null; elements.studioStatus.textContent = "Ready"; };
+        currentAudioEl = audio;
+        elements.studioStatus.textContent = `${persona.name} speaking… (${(result.durationMs / 1000).toFixed(1)}s)`;
+        audio.play();
+        return;
+      }
+      // If result exists but not ok, show the error briefly
+      if (result && result.error) {
+        console.warn("Kokoro TTS:", result.error);
+      }
+    } catch (err) {
+      console.warn("Kokoro TTS failed:", err);
+    }
+
+    // Fallback: Web Speech API (robotic but always available)
+    elements.studioStatus.textContent = "Ready";
+    if (typeof speechSynthesis !== "undefined") {
+      const utterance = new SpeechSynthesisUtterance(text.slice(0, 2000));
+      utterance.rate = 1.0;
+      speechSynthesis.speak(utterance);
+    }
+  }
+
+  populateStudioVoices();
+
+  populatePromptTemplates();
+  refreshModelPanel();
+
+  function navigateToProjectLatest() {
+    const ap = state.activeProject;
+    if (!ap) return;
+
+    // Pick the best drawer tab based on project state
+    const hasActiveRun = ap.activeRun && ap.activeRun.status !== "complete";
+    const hasValidation = ap.activeRun && ap.activeRun.validation && ap.activeRun.validation.status;
+    const hasSpec = ap.activeSpec && ap.activeSpec.raw;
+    const runStatus = (ap.currentRunStatus || "").toLowerCase();
+
+    if (hasActiveRun || /running|streaming|paused|queued/i.test(runStatus)) {
+      drawerTab = "run";
+    } else if (hasValidation && /failed/i.test(ap.activeRun.validation.status)) {
+      drawerTab = "validation";
+    } else if (/complete/i.test(runStatus)) {
+      drawerTab = "diff";
+    } else if (hasSpec) {
+      drawerTab = "spec";
+    } else {
+      drawerTab = "spec";
+    }
+
+    // Scroll messages to bottom after next render
+    requestAnimationFrame(() => {
+      elements.messages.scrollTop = elements.messages.scrollHeight;
+    });
+  }
+
   function render() {
+    renderModels();
+    renderStatus();
+    if (activeView === "studio") {
+      renderStudioProjects();
+      renderStudioMessages();
+      renderStudioStatus();
+      renderFileChanges();
+      return;
+    }
     syncTopbarControls();
     renderTabs();
-    renderModels();
     renderWorkflowPresets();
     renderAgentSelectors();
     renderProjects();
@@ -348,7 +1163,6 @@
     renderRunPanel();
     renderDiffPanel();
     renderValidationPanel();
-    renderStatus();
     renderProjectControls();
     applyPromptPlaceholder();
     rememberUi();
@@ -410,6 +1224,7 @@
     });
     elements.model.value =
       current === AUTO_MODEL_VALUE || models.includes(current) ? current : AUTO_MODEL_VALUE;
+    populateCompareModels();
   }
 
   function renderWorkflowPresets() {
@@ -724,7 +1539,7 @@
     const header = document.createElement("div");
     header.className = "tool-header";
     const left = document.createElement("div");
-    left.innerHTML = `<strong>${item.toolName || "tool"}</strong><div class="meta">${item.summary || ""}</div>`;
+    left.innerHTML = `<strong>${escapeHtml(item.toolName || "tool")}</strong><div class="meta">${escapeHtml(item.summary || "")}</div>`;
     header.appendChild(left);
     if (item.path) {
       header.appendChild(
@@ -955,7 +1770,7 @@
     elements.specPanel.innerHTML = "";
     const header = document.createElement("div");
     header.className = "drawer-header-row";
-    header.innerHTML = `<strong>${activeSpec.title}</strong><span class="meta">${formatRelativeTime(activeSpec.updatedAt)}</span>`;
+    header.innerHTML = `<strong>${escapeHtml(activeSpec.title)}</strong><span class="meta">${escapeHtml(formatRelativeTime(activeSpec.updatedAt))}</span>`;
     elements.specPanel.appendChild(header);
     const actions = document.createElement("div");
     actions.className = "inline-actions";
@@ -1015,7 +1830,7 @@
     elements.runPanel.innerHTML = "";
     const header = document.createElement("div");
     header.className = "drawer-header-row";
-    header.innerHTML = `<strong>${activeRun.summary || activeRun.workflowId || "Run"}</strong><span class="meta">${activeRun.status}</span>`;
+    header.innerHTML = `<strong>${escapeHtml(activeRun.summary || activeRun.workflowId || "Run")}</strong><span class="meta">${escapeHtml(activeRun.status)}</span>`;
     elements.runPanel.appendChild(header);
 
     const actionRow = document.createElement("div");
@@ -1051,7 +1866,7 @@
       node.className = `timeline-item ${event.type || "info"}`;
       const top = document.createElement("div");
       top.className = "timeline-top";
-      top.innerHTML = `<strong>${event.label}</strong><span class="meta">${formatRelativeTime(event.createdAt)}</span>`;
+      top.innerHTML = `<strong>${escapeHtml(event.label)}</strong><span class="meta">${escapeHtml(formatRelativeTime(event.createdAt))}</span>`;
       node.appendChild(top);
       if (event.detail) {
         const detail = document.createElement("div");
@@ -1083,7 +1898,7 @@
       activeRun.checkpoints.forEach((checkpoint) => {
         const item = document.createElement("div");
         item.className = "checkpoint-item";
-        item.innerHTML = `<span>${checkpoint.label}</span><span class="meta">${formatRelativeTime(checkpoint.createdAt)}</span>`;
+        item.innerHTML = `<span>${escapeHtml(checkpoint.label)}</span><span class="meta">${escapeHtml(formatRelativeTime(checkpoint.createdAt))}</span>`;
         item.appendChild(
           createTextButton("Fork", () =>
             api.invoke("vswirks:forkRunCheckpoint", {
@@ -1105,7 +1920,7 @@
       elements.runSummary.textContent = `Awaiting approval for ${state.pendingApproval.relativePath}`;
       const card = document.createElement("div");
       card.className = "approval-card";
-      card.innerHTML = `<strong>Pending proposal</strong><div class="meta">${state.pendingApproval.relativePath}</div>`;
+      card.innerHTML = `<strong>Pending proposal</strong><div class="meta">${escapeHtml(state.pendingApproval.relativePath)}</div>`;
       if (state.pendingApproval.rationale) {
         const rationale = document.createElement("div");
         rationale.className = "meta";
@@ -1156,7 +1971,7 @@
     diffEvents.slice(0, 8).forEach((event) => {
       const card = document.createElement("div");
       card.className = "diff-card";
-      card.innerHTML = `<strong>${event.label}</strong><div class="meta">${event.path || ""}</div>`;
+      card.innerHTML = `<strong>${escapeHtml(event.label)}</strong><div class="meta">${escapeHtml(event.path || "")}</div>`;
       const diff = document.createElement("pre");
       diff.className = "tool-detail diff-preview";
       diff.textContent = event.diff;
@@ -1191,7 +2006,7 @@
 
     const header = document.createElement("div");
     header.className = "drawer-header-row";
-    header.innerHTML = `<strong>${activeRun.validation.summary || "Validation pending"}</strong><span class="meta">${activeRun.validation.status}</span>`;
+    header.innerHTML = `<strong>${escapeHtml(activeRun.validation.summary || "Validation pending")}</strong><span class="meta">${escapeHtml(activeRun.validation.status)}</span>`;
     elements.validationPanel.appendChild(header);
 
     if (!(activeRun.validation.steps || []).length) {
@@ -1205,7 +2020,7 @@
     activeRun.validation.steps.forEach((step) => {
       const card = document.createElement("div");
       card.className = `validation-card ${step.status}`;
-      card.innerHTML = `<strong>${step.label}</strong><div class="meta">${step.command || ""}</div>`;
+      card.innerHTML = `<strong>${escapeHtml(step.label)}</strong><div class="meta">${escapeHtml(step.command || "")}</div>`;
       if (step.output) {
         const detail = document.createElement("pre");
         detail.className = "tool-detail";
@@ -1301,15 +2116,17 @@
   }
 
   function rememberUi() {
-    localStorage.setItem(
-      "vswirks-ui",
-      JSON.stringify({
-        mode: elements.mode.value,
-        executionMode: elements.executionMode.value === "1" ? "act" : "plan",
-        focusChat: elements.app.classList.contains("focus-chat"),
-        drawerTab
-      })
-    );
+    try {
+      localStorage.setItem(
+        "vswirks-ui",
+        JSON.stringify({
+          mode: elements.mode.value,
+          executionMode: elements.executionMode.value === "1" ? "act" : "plan",
+          focusChat: elements.app.classList.contains("focus-chat"),
+          drawerTab
+        })
+      );
+    } catch {}
   }
 
   function sendPrompt() {
@@ -1861,6 +2678,148 @@
       executionMode: elements.executionMode.value === "1" ? "act" : "plan"
     });
   });
+  // ── Studio listeners ──
+  elements.viewStudio.addEventListener("click", () => switchView("studio"));
+  elements.viewProjects.addEventListener("click", () => switchView("projects"));
+  elements.viewModelLab.addEventListener("click", () => switchView("modellab"));
+  elements.studioSend.addEventListener("click", studioSendPrompt);
+  elements.studioPrompt.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); studioSendPrompt(); }
+  });
+  elements.studioPrompt.addEventListener("input", () => renderStudioStatus());
+  elements.studioDeepResearch.addEventListener("change", (e) => { studioFeatures.deepResearch = e.target.checked; });
+  elements.studioWebTools.addEventListener("change", (e) => { studioFeatures.webTools = e.target.checked; });
+  elements.studioQuickResponse.addEventListener("change", (e) => { studioFeatures.quickResponse = e.target.checked; });
+  elements.studioVoice.addEventListener("change", (e) => { studioVoiceId = e.target.value; });
+  elements.studioVoiceTest.addEventListener("click", () => {
+    speakText("Hey, what are you working on? I'm your local dev companion. Let's build something great together.");
+  });
+  elements.studioVoiceStop.addEventListener("click", stopSpeaking);
+  elements.studioNewProject.addEventListener("click", () => {
+    void api.invoke("vswirks:createProject");
+  });
+  elements.studioNewChat.addEventListener("click", () => {
+    void api.invoke("vswirks:newChat", { mode: "chat", executionMode: "plan" });
+  });
+  elements.studioClearProject.addEventListener("click", () => {
+    void api.invoke("vswirks:newChat", { mode: "chat", executionMode: "plan" });
+  });
+  elements.studioExport.addEventListener("click", () => {
+    void api.invoke("vswirks:exportConversation");
+  });
+  elements.studioImport.addEventListener("click", async () => {
+    await api.invoke("vswirks:importConversation");
+  });
+  elements.studioTemplateSelect.addEventListener("change", (e) => {
+    const idx = parseInt(e.target.value, 10);
+    if (!isNaN(idx) && PROMPT_TEMPLATES[idx]) {
+      elements.studioPrompt.value = PROMPT_TEMPLATES[idx].prompt;
+      elements.studioPrompt.focus();
+    }
+    e.target.value = "";
+  });
+  let searchDebounce = null;
+  elements.studioSearch.addEventListener("input", () => {
+    clearTimeout(searchDebounce);
+    const query = elements.studioSearch.value.trim();
+    if (!query) {
+      elements.studioSearchResults.innerHTML = "";
+      return;
+    }
+    searchDebounce = setTimeout(async () => {
+      const result = await api.invoke("vswirks:searchProjectFiles", { query });
+      elements.studioSearchResults.innerHTML = "";
+      if (result && result.ok && result.results.length) {
+        result.results.forEach((file) => {
+          const row = document.createElement("div");
+          row.className = "search-result-row";
+          row.textContent = file;
+          row.title = `Click to mention ${file} in chat`;
+          row.addEventListener("click", () => {
+            elements.studioPrompt.value += `\n[${file}] `;
+            elements.studioPrompt.focus();
+          });
+          elements.studioSearchResults.appendChild(row);
+        });
+      } else {
+        elements.studioSearchResults.innerHTML = '<span class="meta">No results</span>';
+      }
+    }, 400);
+  });
+  elements.studioRefreshGit.addEventListener("click", () => refreshGitPanel());
+  elements.studioRefreshModels.addEventListener("click", () => refreshModelPanel());
+
+  // Git commit
+  elements.studioGitCommitBtn.addEventListener("click", async () => {
+    const message = elements.studioGitMessage.value.trim();
+    if (!message) return;
+    elements.studioGitCommitBtn.disabled = true;
+    const result = await api.invoke("vswirks:gitCommit", { message });
+    elements.studioGitCommitBtn.disabled = false;
+    if (result && result.ok) {
+      elements.studioGitMessage.value = "";
+      refreshGitPanel();
+    } else {
+      alert(result ? result.error : "Commit failed");
+    }
+  });
+  elements.studioGitMessage.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") { e.preventDefault(); elements.studioGitCommitBtn.click(); }
+  });
+
+  // Git branch checkout
+  elements.studioGitCheckoutBtn.addEventListener("click", async () => {
+    const branch = elements.studioGitBranchSelect.value;
+    if (!branch) return;
+    const result = await api.invoke("vswirks:gitCheckout", { branch });
+    if (result && result.ok) refreshGitPanel();
+    else alert(result ? result.error : "Checkout failed");
+  });
+
+  // RAG indexing & search
+  elements.studioIndexProject.addEventListener("click", indexProject);
+  elements.studioRagSearch.addEventListener("click", ragSearch);
+  elements.studioSearch.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && e.shiftKey) { e.preventDefault(); ragSearch(); }
+  });
+
+  // Auto-context toggle
+  elements.studioAutoContext.checked = autoContextEnabled;
+  elements.studioAutoContext.addEventListener("change", () => {
+    autoContextEnabled = elements.studioAutoContext.checked;
+    persisted.autoContext = autoContextEnabled;
+    try { localStorage.setItem("vswirks-ui", JSON.stringify(persisted)); } catch {}
+  });
+
+  // Image generation
+  elements.studioGenerateImage.addEventListener("click", generateImage);
+
+  // Studio tabs
+  [elements.studioTabChat, elements.studioTabTerminal, elements.studioTabCompare].forEach((btn) => {
+    btn.addEventListener("click", () => switchStudioPanel(btn.dataset.panel));
+  });
+
+  // Terminal
+  elements.studioTerminalRun.addEventListener("click", runTerminalCommand);
+  elements.studioTerminalInput.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") { e.preventDefault(); runTerminalCommand(); }
+  });
+
+  // Model compare
+  elements.compareRun.addEventListener("click", runModelComparison);
+  elements.studioPullModel.addEventListener("click", async () => {
+    const name = elements.studioModelName.value.trim();
+    if (!name) return;
+    elements.studioPullModel.disabled = true;
+    elements.studioPullModel.textContent = "Pulling…";
+    const result = await api.invoke("vswirks:pullOllamaModel", { name });
+    elements.studioPullModel.disabled = false;
+    elements.studioPullModel.textContent = "Pull";
+    elements.studioModelName.value = "";
+    if (result && !result.ok) alert(`Pull failed: ${result.error}`);
+    else refreshModelPanel();
+  });
+
   elements.attachFile.addEventListener("click", () => {
     void api.invoke("vswirks:attachFile");
   });
@@ -1869,6 +2828,9 @@
   });
   elements.attachEditorSelection.addEventListener("click", () => {
     void api.invoke("vswirks:attachEditorSelection");
+  });
+  elements.uploadSpec.addEventListener("click", () => {
+    void api.invoke("vswirks:uploadSpec");
   });
   elements.stop.addEventListener("click", () => {
     void api.invoke("vswirks:abort");
@@ -2097,5 +3059,223 @@
   applyPromptPlaceholder();
   renderTabs();
   renderVibe();
+  // ── Model Lab ─────────────────────────────────────
+  let labModels = [];
+  let labAbliterated = [];
+  let labConfigs = [];
+  let labSelectedModel = null;
+
+  async function refreshLabModels() {
+    const result = await api.invoke("vswirks:listLocalModels");
+    if (result && result.ok) {
+      labModels = result.models || [];
+      renderLabModels();
+    }
+  }
+
+  async function refreshLabAbliterated() {
+    const result = await api.invoke("vswirks:listAbliteratedModels");
+    if (result && result.ok) {
+      labAbliterated = result.models || [];
+      renderLabAbliterated();
+    }
+  }
+
+  async function refreshLabConfigs() {
+    const result = await api.invoke("vswirks:getAbliterateConfigs");
+    if (result && result.ok) {
+      labConfigs = result.configs || [];
+      renderLabConfigs();
+    }
+  }
+
+  function renderLabModels() {
+    const container = document.getElementById("labModelList");
+    if (!container) return;
+    container.innerHTML = labModels.map(m => {
+      const selected = labSelectedModel === m.name ? " active" : "";
+      const sourceClass = m.source || "";
+      return `<div class="lab-model-item${selected}" data-model="${escapeHtml(m.name)}" data-path="${escapeHtml(m.path || m.name)}">
+        <span>${escapeHtml(m.name)}</span>
+        <span class="lab-source ${sourceClass}">${escapeHtml(m.source || "")}</span>
+      </div>`;
+    }).join("");
+    container.querySelectorAll(".lab-model-item").forEach(el => {
+      el.addEventListener("click", () => {
+        labSelectedModel = el.dataset.model;
+        const modelPath = el.dataset.path;
+        document.getElementById("labModelPath").value = modelPath;
+        document.getElementById("labEvalModelPath").value = modelPath;
+        document.getElementById("labExportModelPath").value = modelPath;
+        renderLabModels();
+      });
+    });
+  }
+
+  function renderLabAbliterated() {
+    const container = document.getElementById("labAbliteratedList");
+    if (!container) return;
+    container.innerHTML = labAbliterated.map(m =>
+      `<div class="lab-model-item" data-path="${escapeHtml(m.path)}">
+        <span>${escapeHtml(m.name)}</span>
+        <span class="lab-source abliterated">abliterated</span>
+      </div>`
+    ).join("");
+    container.querySelectorAll(".lab-model-item").forEach(el => {
+      el.addEventListener("click", () => {
+        const p = el.dataset.path;
+        document.getElementById("labModelPath").value = p;
+        document.getElementById("labEvalModelPath").value = p;
+        document.getElementById("labExportModelPath").value = p;
+      });
+    });
+  }
+
+  function renderLabConfigs() {
+    const container = document.getElementById("labConfigList");
+    if (!container) return;
+    container.innerHTML = labConfigs.map(c =>
+      `<div class="lab-config-item" data-config="${escapeHtml(c.name)}">${escapeHtml(c.name)}</div>`
+    ).join("");
+    container.querySelectorAll(".lab-config-item").forEach(el => {
+      el.addEventListener("click", () => {
+        const config = labConfigs.find(c => c.name === el.dataset.config);
+        if (config) {
+          if (config.model_path) document.getElementById("labModelPath").value = config.model_path;
+          if (config.direction_multiplier) document.getElementById("labDirMultiplier").value = config.direction_multiplier;
+          if (config.num_prompts) document.getElementById("labNumPrompts").value = config.num_prompts;
+          document.getElementById("labNullSpace").checked = !!config.use_null_space;
+          document.getElementById("labWinsorize").checked = config.use_winsorization !== false;
+          document.getElementById("labAdaptive").checked = config.adaptive_layer_weighting !== false;
+        }
+      });
+    });
+  }
+
+  // Lab tab switching
+  document.querySelectorAll(".lab-tab").forEach(tab => {
+    tab.addEventListener("click", () => {
+      document.querySelectorAll(".lab-tab").forEach(t => t.classList.remove("active"));
+      document.querySelectorAll(".lab-panel").forEach(p => { p.classList.remove("active"); p.style.display = "none"; });
+      tab.classList.add("active");
+      const panel = document.querySelector(`.lab-panel[data-labpanel="${tab.dataset.labpanel}"]`);
+      if (panel) { panel.classList.add("active"); panel.style.display = "block"; }
+    });
+  });
+
+  // Refresh button
+  const labRefreshBtn = document.getElementById("labRefreshModels");
+  if (labRefreshBtn) labRefreshBtn.addEventListener("click", () => { refreshLabModels(); refreshLabAbliterated(); refreshLabConfigs(); });
+
+  // Save config
+  const labSaveConfigBtn = document.getElementById("labSaveConfig");
+  if (labSaveConfigBtn) labSaveConfigBtn.addEventListener("click", async () => {
+    const name = document.getElementById("labConfigName").value.trim();
+    if (!name) return;
+    const config = {
+      model_path: document.getElementById("labModelPath").value,
+      direction_multiplier: parseFloat(document.getElementById("labDirMultiplier").value) || 1.0,
+      num_prompts: parseInt(document.getElementById("labNumPrompts").value) || 30,
+      use_null_space: document.getElementById("labNullSpace").checked,
+      use_winsorization: document.getElementById("labWinsorize").checked,
+      adaptive_layer_weighting: document.getElementById("labAdaptive").checked
+    };
+    await api.invoke("vswirks:saveAbliterateConfig", { name, config });
+    refreshLabConfigs();
+  });
+
+  // Start abliteration
+  const labStartBtn = document.getElementById("labStartAbliterate");
+  const labCancelBtn = document.getElementById("labCancelAbliterate");
+  if (labStartBtn) labStartBtn.addEventListener("click", async () => {
+    const modelPath = document.getElementById("labModelPath").value.trim();
+    if (!modelPath) return;
+    labStartBtn.style.display = "none";
+    labCancelBtn.style.display = "";
+    document.getElementById("labProgressLog").textContent = "Starting abliteration…\n";
+    document.getElementById("labProgressFill").style.width = "5%";
+
+    const config = {
+      directionMultiplier: parseFloat(document.getElementById("labDirMultiplier").value) || 1.0,
+      numPrompts: parseInt(document.getElementById("labNumPrompts").value) || 30,
+      useNullSpace: document.getElementById("labNullSpace").checked,
+      useWinsorization: document.getElementById("labWinsorize").checked,
+      adaptiveLayerWeighting: document.getElementById("labAdaptive").checked
+    };
+
+    const result = await api.invoke("vswirks:abliterateModel", { modelPath, config });
+    labStartBtn.style.display = "";
+    labCancelBtn.style.display = "none";
+    const log = document.getElementById("labProgressLog");
+    if (result && result.ok) {
+      log.textContent += "\n✅ Abliteration complete!\nOutput: " + result.outputPath + "\n";
+      document.getElementById("labProgressFill").style.width = "100%";
+      refreshLabAbliterated();
+    } else {
+      log.textContent += "\n❌ Failed: " + (result ? result.error : "Unknown error") + "\n";
+      document.getElementById("labProgressFill").style.width = "0%";
+    }
+  });
+
+  if (labCancelBtn) labCancelBtn.addEventListener("click", () => {
+    api.invoke("vswirks:abliterateCancel");
+    labCancelBtn.style.display = "none";
+    labStartBtn.style.display = "";
+    document.getElementById("labProgressLog").textContent += "\n⚠️ Cancelled by user\n";
+  });
+
+  // Evaluate refusal
+  const labRunEvalBtn = document.getElementById("labRunEval");
+  if (labRunEvalBtn) labRunEvalBtn.addEventListener("click", async () => {
+    const modelPath = document.getElementById("labEvalModelPath").value.trim();
+    if (!modelPath) return;
+    const resultsEl = document.getElementById("labEvalResults");
+    resultsEl.innerHTML = '<span class="meta">Running evaluation…</span>';
+    const result = await api.invoke("vswirks:evaluateRefusal", { modelPath });
+    if (result && result.ok) {
+      const rate = result.harmful_refusal_rate || result.refusal_rate || 0;
+      const rateClass = rate > 0.7 ? "good" : rate > 0.3 ? "warn" : "bad";
+      resultsEl.innerHTML = `
+        <div class="lab-eval-stat"><span class="lab-eval-label">Harmful Refusal Rate</span><span class="lab-eval-value ${rateClass}">${(rate * 100).toFixed(1)}%</span></div>
+        <div class="lab-eval-stat"><span class="lab-eval-label">Harmless Refusal Rate</span><span class="lab-eval-value">${((result.harmless_refusal_rate || 0) * 100).toFixed(1)}%</span></div>
+        <div class="lab-eval-stat"><span class="lab-eval-label">Total Tested</span><span class="lab-eval-value">${result.total_tested || "N/A"}</span></div>
+      `;
+    } else {
+      resultsEl.innerHTML = `<span class="meta" style="color:var(--bad)">Evaluation failed: ${escapeHtml(result ? result.error : "Unknown")}</span>`;
+    }
+  });
+
+  // Export GGUF
+  const labRunExportBtn = document.getElementById("labRunExport");
+  if (labRunExportBtn) labRunExportBtn.addEventListener("click", async () => {
+    const modelPath = document.getElementById("labExportModelPath").value.trim();
+    const quantType = document.getElementById("labQuantType").value;
+    if (!modelPath) return;
+    const resultsEl = document.getElementById("labExportResults");
+    resultsEl.innerHTML = '<span class="meta">Exporting to GGUF…</span>';
+    const result = await api.invoke("vswirks:exportToGguf", { modelPath, quantType });
+    if (result && result.ok) {
+      resultsEl.innerHTML = `<span style="color:var(--good)">✅ Export complete</span><br><span class="meta">${escapeHtml(result.output || "")}</span>`;
+    } else {
+      resultsEl.innerHTML = `<span style="color:var(--bad)">❌ Export failed: ${escapeHtml(result ? result.error : "Unknown")}</span>`;
+    }
+  });
+
+  // Import to Ollama
+  const labRunImportBtn = document.getElementById("labRunImport");
+  if (labRunImportBtn) labRunImportBtn.addEventListener("click", async () => {
+    const ggufPath = document.getElementById("labGgufPath").value.trim();
+    const modelName = document.getElementById("labOllamaName").value.trim();
+    if (!ggufPath || !modelName) return;
+    const resultsEl = document.getElementById("labImportResults");
+    resultsEl.innerHTML = '<span class="meta">Importing to Ollama…</span>';
+    const result = await api.invoke("vswirks:importToOllama", { ggufPath, modelName });
+    if (result && result.ok) {
+      resultsEl.innerHTML = `<span style="color:var(--good)">✅ Model "${escapeHtml(modelName)}" imported to Ollama</span>`;
+    } else {
+      resultsEl.innerHTML = `<span style="color:var(--bad)">❌ Import failed: ${escapeHtml(result ? result.error : "Unknown")}</span>`;
+    }
+  });
+
   void api.invoke("vswirks:ready");
 })();

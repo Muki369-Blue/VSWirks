@@ -1,13 +1,36 @@
 const path = require("path");
+const fs = require("fs");
 
 const { app, BrowserWindow, ipcMain } = require("electron");
 
 const { VSWirksController } = require("./controller.cjs");
 const { IPC_CHANNELS } = require("./ipc-channels.cjs");
 
+// Kokoro TTS needs voice .bin files relative to CWD.
+// Ensure a voices/ symlink exists pointing to the kokoro-js package voices.
+function ensureKokoroVoicesLink() {
+  try {
+    const kokoroVoicesDir = path.resolve(__dirname, "..", "node_modules", "kokoro-js", "voices");
+    // Walk up to find node_modules (monorepo hoisting)
+    let searchDir = path.resolve(__dirname, "..");
+    let found = null;
+    for (let i = 0; i < 5; i++) {
+      const candidate = path.join(searchDir, "node_modules", "kokoro-js", "voices");
+      if (fs.existsSync(candidate)) { found = candidate; break; }
+      searchDir = path.dirname(searchDir);
+    }
+    if (!found) return;
+    const linkTarget = path.join(process.cwd(), "voices");
+    if (!fs.existsSync(linkTarget)) {
+      fs.symlinkSync(found, linkTarget, "dir");
+    }
+  } catch { /* non-fatal */ }
+}
+ensureKokoroVoicesLink();
+
 let mainWindow = null;
 let controller = null;
-const APP_ICON_PATH = path.join(__dirname, "..", "src", "assets", "vswirks-dock.png");
+const APP_ICON_PATH = path.join(__dirname, "assets", "vswirks-icon.png");
 
 app.setName("VSWirks App");
 
@@ -72,6 +95,12 @@ app.whenReady().then(async () => {
 app.on("window-all-closed", () => {
   if (process.platform !== "darwin") {
     app.quit();
+  }
+});
+
+app.on("before-quit", async () => {
+  if (controller) {
+    controller.cleanup();
   }
 });
 
