@@ -67,6 +67,7 @@ const LEGACY_CODER_MODEL = "mlx/Qwen3.5-27B-Claude-4.6-Opus-Distilled-MLX-6bit";
 const DEFAULT_CODER_MODEL = "devstral-small-2";
 const DEFAULT_CHAT_MODEL = "llama3.3-8b-thinking:q6";
 const DEFAULT_AGENT_PROFILE_ID = "app-default";
+const DEFAULT_ABLITERATOR_DIR = path.join(os.homedir(), "Documents", "abliterator-main");
 
 class VSWirksController {
   constructor(window, dependencies = {}) {
@@ -717,7 +718,7 @@ class VSWirksController {
 
   async abliterateModel({ modelPath, config = {} } = {}) {
     if (!modelPath) return { ok: false, error: "No model path provided" };
-    const abliteratorDir = "/Users/bluewirks.max/Documents/abliterator-main";
+    const abliteratorDir = (this.settings && this.settings.abliteratorDir) || DEFAULT_ABLITERATOR_DIR;
     const outputDir = path.join(os.homedir(), ".abliterate", "abliterated_models", path.basename(modelPath) + "-abliterated");
     await fs.mkdir(outputDir, { recursive: true }).catch(() => {});
 
@@ -803,7 +804,7 @@ class VSWirksController {
 
   async evaluateRefusal({ modelPath } = {}) {
     if (!modelPath) return { ok: false, error: "No model path" };
-    const abliteratorDir = "/Users/bluewirks.max/Documents/abliterator-main";
+    const abliteratorDir = (this.settings && this.settings.abliteratorDir) || DEFAULT_ABLITERATOR_DIR;
     const pythonBin = path.join(abliteratorDir, ".venv", "bin", "python");
     try {
       const output = cp.execFileSync(pythonBin, [
@@ -819,7 +820,7 @@ class VSWirksController {
 
   async exportToGguf({ modelPath, quantType = "Q4_K_M" } = {}) {
     if (!modelPath) return { ok: false, error: "No model path" };
-    const abliteratorDir = "/Users/bluewirks.max/Documents/abliterator-main";
+    const abliteratorDir = (this.settings && this.settings.abliteratorDir) || DEFAULT_ABLITERATOR_DIR;
     const outputDir = path.join(os.homedir(), ".abliterate", "gguf_exports");
     await fs.mkdir(outputDir, { recursive: true }).catch(() => {});
     const pythonBin = path.join(abliteratorDir, ".venv", "bin", "python");
