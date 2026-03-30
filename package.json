@@ -2,13 +2,12 @@
   "name": "vswirks-workspace",
   "private": true,
   "workspaces": [
-    "vswirks-app",
-    "VSCodium"
+    "vswirks-app"
   ],
   "scripts": {
     "test": "npm run verify",
     "test:app": "npm --prefix ./vswirks-app test",
-    "check:syntax": "node --check ./VSCodium/extension.js && node --check ./VSCodium/media/main.js && node --check ./vswirks-app/electron/main.cjs && node --check ./vswirks-app/electron/controller.cjs && node --check ./vswirks-app/electron/runner.cjs && node --check ./vswirks-app/electron/workspace-tools.cjs && node --check ./vswirks-app/src/app.js",
+    "check:syntax": "node --check ./vswirks-app/electron/main.cjs && node --check ./vswirks-app/electron/controller.cjs && node --check ./vswirks-app/electron/runner.cjs && node --check ./vswirks-app/electron/workspace-tools.cjs && node --check ./vswirks-app/src/app.js",
     "verify": "npm run test:app && npm run check:syntax"
   }
 }
