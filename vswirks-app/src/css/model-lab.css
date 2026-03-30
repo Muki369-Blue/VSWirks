@@ -1,0 +1,159 @@
+/* ── Model Lab ─────────────────────────────────────── */
+.model-lab-view {
+  display: grid;
+  grid-template-columns: 260px 1fr;
+  gap: 0;
+  height: 100%;
+  overflow: hidden;
+}
+.lab-sidebar {
+  background: var(--surface-strong);
+  border-right: 1px solid var(--border);
+  overflow-y: auto;
+  padding: 12px;
+}
+.lab-sidebar-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 8px 0;
+  font-weight: 600;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--muted);
+}
+.lab-sidebar-section { margin-top: 16px; }
+.lab-model-list { display: flex; flex-direction: column; gap: 2px; }
+.lab-model-item {
+  padding: 6px 8px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  font-size: 12px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  transition: background 0.15s;
+}
+.lab-model-item:hover { background: var(--surface-soft); }
+.lab-model-item.active { background: var(--accent-soft); border: 1px solid var(--accent); }
+.lab-model-item .lab-source {
+  font-size: 10px;
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: var(--surface-pop);
+  color: var(--muted);
+}
+.lab-model-item .lab-source.ollama { color: var(--accent-2); }
+.lab-model-item .lab-source.huggingface { color: var(--accent-4); }
+.lab-model-item .lab-source.abliterated { color: var(--accent); }
+.lab-config-list { display: flex; flex-direction: column; gap: 2px; }
+.lab-config-item {
+  padding: 5px 8px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  font-size: 11px;
+  color: var(--muted);
+  transition: background 0.15s;
+}
+.lab-config-item:hover { background: var(--surface-soft); color: var(--text); }
+.lab-main {
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+  padding: 20px 28px;
+}
+.lab-tabs {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 20px;
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 8px;
+}
+.lab-tab {
+  padding: 6px 14px;
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  font-size: 13px;
+  cursor: pointer;
+  border-radius: var(--radius-sm) var(--radius-sm) 0 0;
+  transition: all 0.15s;
+}
+.lab-tab:hover { color: var(--text); background: var(--surface-soft); }
+.lab-tab.active { color: var(--accent-2); background: var(--surface-pop); }
+.lab-panel { display: none; }
+.lab-panel.active { display: block; }
+.lab-panel h3 { margin: 0 0 4px; font-size: 18px; color: var(--accent-2); }
+.lab-panel .meta { color: var(--muted); margin: 0 0 16px; font-size: 12px; }
+.lab-form { display: flex; flex-direction: column; gap: 12px; max-width: 600px; }
+.lab-form label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--muted); }
+.lab-input {
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--text);
+  font-size: 13px;
+}
+.lab-input:focus { border-color: var(--accent-2); outline: none; }
+.lab-input-sm { max-width: 180px; }
+.lab-checkboxes { display: flex; flex-direction: column; gap: 6px; }
+.lab-check { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--text); cursor: pointer; }
+.lab-check input[type="checkbox"] { width: 14px; height: 14px; }
+.lab-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-top: 8px; }
+.lab-progress { margin-top: 16px; }
+.lab-progress-bar {
+  height: 6px;
+  background: var(--surface-pop);
+  border-radius: 3px;
+  overflow: hidden;
+  margin-bottom: 8px;
+}
+.lab-progress-fill {
+  height: 100%;
+  width: 0%;
+  background: linear-gradient(90deg, var(--accent-2), var(--accent-4));
+  border-radius: 3px;
+  transition: width 0.3s ease;
+}
+.lab-progress-log {
+  max-height: 200px;
+  overflow-y: auto;
+  font-family: "SF Mono", "Fira Code", monospace;
+  font-size: 11px;
+  color: var(--muted);
+  background: var(--surface-strong);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 8px;
+  white-space: pre-wrap;
+}
+.lab-eval-results, .lab-export-results, .lab-import-results {
+  margin-top: 16px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  font-size: 12px;
+}
+.lab-eval-stat {
+  display: flex;
+  justify-content: space-between;
+  padding: 6px 0;
+  border-bottom: 1px solid var(--border);
+}
+.lab-eval-stat:last-child { border-bottom: none; }
+.lab-eval-label { color: var(--muted); }
+.lab-eval-value { font-weight: 600; }
+.lab-eval-value.good { color: var(--good); }
+.lab-eval-value.warn { color: var(--warn); }
+.lab-eval-value.bad { color: var(--bad); }
+
+/* View visibility for Model Lab */
+.view-modellab .layout,
+.view-modellab .drawer,
+.view-modellab .bridge-strip,
+.view-modellab .studio-view { display: none !important; }
+.view-modellab .model-lab-view { display: grid !important; }
+
