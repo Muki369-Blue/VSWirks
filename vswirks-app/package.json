@@ -1,6 +1,6 @@
 {
   "name": "vswirks-app",
-  "productName": "VSWirks App",
+  "productName": "CodeBlue-Wirks",
   "version": "0.1.0",
   "private": true,
   "description": "Standalone local-first companion app for VSWirks Editor and ai-runtime.",

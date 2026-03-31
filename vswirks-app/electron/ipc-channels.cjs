@@ -65,7 +65,40 @@ const IPC_CHANNELS = Object.freeze([
   "vswirks:exportToGguf",
   "vswirks:importToOllama",
   "vswirks:getAbliterateConfigs",
-  "vswirks:saveAbliterateConfig"
+  "vswirks:saveAbliterateConfig",
+
+  // ── V2: Preview Manager ──────────────────────────
+  "vswirks:previewStart",
+  "vswirks:previewStop",
+  "vswirks:previewRestart",
+  "vswirks:previewStatus",
+  "vswirks:previewLogs",
+  "vswirks:previewStopAll",
+
+  // ── V2: Memory Store ─────────────────────────────
+  "vswirks:memoryLogDecision",
+  "vswirks:memoryQueryDecisions",
+  "vswirks:memoryAddLearning",
+  "vswirks:memoryGetLearnings",
+  "vswirks:memoryGetContextSummary",
+  "vswirks:memoryClearProject",
+
+  // ── V2: Deploy Manager ───────────────────────────
+  "vswirks:deployBuild",
+  "vswirks:deployPackage",
+  "vswirks:deployListReleases",
+  "vswirks:deployGetRelease",
+  "vswirks:deployLocal",
+
+  // ── V2: Plugin Host ──────────────────────────────
+  "vswirks:pluginRegister",
+  "vswirks:pluginActivate",
+  "vswirks:pluginDeactivate",
+  "vswirks:pluginUnregister",
+  "vswirks:pluginList",
+  "vswirks:pluginGetDetails",
+  "vswirks:connectorList",
+  "vswirks:connectorInvoke"
 ]);
 
 module.exports = {
