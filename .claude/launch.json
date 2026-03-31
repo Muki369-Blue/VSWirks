@@ -9,8 +9,8 @@
     },
     {
       "name": "vswirks-app",
-      "runtimeExecutable": "npm",
-      "runtimeArgs": ["run", "dev"],
+      "runtimeExecutable": "/bin/sh",
+      "runtimeArgs": ["-c", "cd /Users/bluewirks.max/Documents/VSWirks/.claude/worktrees/thirsty-jang/vswirks-app && npx electron electron/main.cjs"],
       "port": 0
     },
     {

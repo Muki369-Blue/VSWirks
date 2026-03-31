@@ -61,6 +61,10 @@ const {
 const { isImagePath, createImageAttachment } = require("./image-tools.cjs");
 const { runConversation, buildWorkspaceSystemPrompt } = require("./runner.cjs");
 const { synthesize: ttssynthesize } = require("./tts-engine.cjs");
+const { PreviewManager } = require("./preview/preview-manager.cjs");
+const { MemoryStore } = require("./memory/memory-store.cjs");
+const { DeployManager } = require("./deploy/deploy-manager.cjs");
+const { PluginHost } = require("./plugins/plugin-host.cjs");
 
 const AUTO_MODEL_VALUE = "__auto__";
 const LEGACY_CODER_MODEL = "mlx/Qwen3.5-27B-Claude-4.6-Opus-Distilled-MLX-6bit";
@@ -109,6 +113,14 @@ class VSWirksController {
     this.bridgePollHandle = undefined;
     this.fileWatcher = null;
     this.recentFileChanges = [];
+
+    // ── V2 Subsystems ──────────────────────────────
+    const emitEvent = (evt) => this.emitEvent(evt);
+    const getActiveProject = () => this.getActiveProject();
+    this.previewManager = new PreviewManager({ emitEvent });
+    this.memoryStore = new MemoryStore();
+    this.deployManager = new DeployManager({ emitEvent });
+    this.pluginHost = new PluginHost({ emitEvent, getActiveProject });
   }
 
   // ── File watcher ───────────────────────────────────
@@ -866,6 +878,8 @@ class VSWirksController {
       this._abliterateProcess = null;
     }
     this.stopFileWatcher();
+    // V2 cleanup
+    this.previewManager.stopAll().catch(() => {});
   }
 
   async initialize() {
@@ -874,6 +888,7 @@ class VSWirksController {
     await this.loadState();
     await this.loadBridgeState();
     await this.refreshRuntimeState();
+    await this.pluginHost.loadRegistry().catch(() => {});
     const project = this.ensureProject();
     this.startBridgePolling();
     if (project) {
@@ -1021,6 +1036,87 @@ class VSWirksController {
         return this.getAbliterateConfigs();
       case "vswirks:saveAbliterateConfig":
         return this.saveAbliterateConfig(payload || {});
+
+      // ── V2: Preview Manager ────────────────────────
+      case "vswirks:previewStart": {
+        const p = this.getActiveProject();
+        return this.previewManager.start({ projectId: p && p.id, workspaceRoot: p && p.workspaceRoot, ...(payload || {}) });
+      }
+      case "vswirks:previewStop": {
+        const p = this.getActiveProject();
+        return this.previewManager.stop({ projectId: (payload && payload.projectId) || (p && p.id) });
+      }
+      case "vswirks:previewRestart": {
+        const p = this.getActiveProject();
+        return this.previewManager.restart({ projectId: (payload && payload.projectId) || (p && p.id) });
+      }
+      case "vswirks:previewStatus": {
+        const p = this.getActiveProject();
+        return this.previewManager.getStatus({ projectId: (payload && payload.projectId) || (p && p.id) });
+      }
+      case "vswirks:previewLogs": {
+        const p = this.getActiveProject();
+        return this.previewManager.getLogs({ projectId: (payload && payload.projectId) || (p && p.id), ...(payload || {}) });
+      }
+      case "vswirks:previewStopAll":
+        return this.previewManager.stopAll();
+
+      // ── V2: Memory Store ───────────────────────────
+      case "vswirks:memoryLogDecision":
+        return this.memoryStore.logDecision(payload || {});
+      case "vswirks:memoryQueryDecisions":
+        return this.memoryStore.queryDecisions(payload || {});
+      case "vswirks:memoryAddLearning":
+        return this.memoryStore.addLearning(payload || {});
+      case "vswirks:memoryGetLearnings":
+        return this.memoryStore.getLearnings(payload || {});
+      case "vswirks:memoryGetContextSummary": {
+        const p = this.getActiveProject();
+        return this.memoryStore.getContextSummary({ projectId: (payload && payload.projectId) || (p && p.id), ...(payload || {}) });
+      }
+      case "vswirks:memoryClearProject":
+        return this.memoryStore.clearProject(payload || {});
+
+      // ── V2: Deploy Manager ─────────────────────────
+      case "vswirks:deployBuild": {
+        const p = this.getActiveProject();
+        return this.deployManager.build({ projectId: p && p.id, workspaceRoot: p && p.workspaceRoot, ...(payload || {}) });
+      }
+      case "vswirks:deployPackage": {
+        const p = this.getActiveProject();
+        return this.deployManager.package({ projectId: p && p.id, workspaceRoot: p && p.workspaceRoot, ...(payload || {}) });
+      }
+      case "vswirks:deployListReleases": {
+        const p = this.getActiveProject();
+        return this.deployManager.listReleases({ projectId: (payload && payload.projectId) || (p && p.id), ...(payload || {}) });
+      }
+      case "vswirks:deployGetRelease": {
+        const p = this.getActiveProject();
+        return this.deployManager.getRelease({ projectId: (payload && payload.projectId) || (p && p.id), ...(payload || {}) });
+      }
+      case "vswirks:deployLocal": {
+        const p = this.getActiveProject();
+        return this.deployManager.deployLocal({ projectId: p && p.id, workspaceRoot: p && p.workspaceRoot, ...(payload || {}) });
+      }
+
+      // ── V2: Plugin Host ────────────────────────────
+      case "vswirks:pluginRegister":
+        return this.pluginHost.registerPlugin(payload || {});
+      case "vswirks:pluginActivate":
+        return this.pluginHost.activatePlugin(payload || {});
+      case "vswirks:pluginDeactivate":
+        return this.pluginHost.deactivatePlugin(payload || {});
+      case "vswirks:pluginUnregister":
+        return this.pluginHost.unregisterPlugin(payload || {});
+      case "vswirks:pluginList":
+        return this.pluginHost.listPlugins();
+      case "vswirks:pluginGetDetails":
+        return this.pluginHost.getPlugin(payload || {});
+      case "vswirks:connectorList":
+        return this.pluginHost.listConnectors(payload || {});
+      case "vswirks:connectorInvoke":
+        return this.pluginHost.invokeConnector(payload || {});
+
       default:
         return null;
     }
@@ -3793,6 +3889,22 @@ async function spawnDetachedProcess(command, args, cwd) {
       }
     }, 150);
   });
+}
+
+// ── V2 Mixins ─────────────────────────────────────────
+// Domain-specific methods extracted into focused modules.
+// Each mixin is applied to the prototype so `this` access is preserved.
+const gitMixin = require("./controller/git-mixin.cjs");
+const modelMixin = require("./controller/model-mixin.cjs");
+const mediaMixin = require("./controller/media-mixin.cjs");
+const settingsMixin = require("./controller/settings-mixin.cjs");
+
+for (const mixin of [gitMixin, modelMixin, mediaMixin, settingsMixin]) {
+  for (const [key, value] of Object.entries(mixin)) {
+    if (typeof value === "function" && key !== "DEFAULT_ABLITERATOR_DIR") {
+      VSWirksController.prototype[key] = value;
+    }
+  }
 }
 
 module.exports = {
