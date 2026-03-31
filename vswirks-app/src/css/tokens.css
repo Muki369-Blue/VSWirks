@@ -95,5 +95,16 @@ button:disabled, select:disabled, input:disabled, textarea:disabled {
   opacity: 0.5; cursor: default;
 }
 
+/* ── Focus styles (WCAG 2.4.7) ─────────────────────── */
+:focus-visible {
+  outline: 2px solid var(--accent-2, #52d6f4);
+  outline-offset: 2px;
+}
+button:focus-visible, select:focus-visible, input:focus-visible, textarea:focus-visible {
+  outline: 2px solid var(--accent-2, #52d6f4);
+  outline-offset: 2px;
+  box-shadow: 0 0 0 4px rgba(82, 214, 244, 0.2);
+}
+
 a { color: #9bc8ff; }
 

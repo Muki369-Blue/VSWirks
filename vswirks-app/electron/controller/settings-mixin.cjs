@@ -4,9 +4,9 @@
 const { writeSettings } = require("../../../shared/vswirks-state");
 const {
   normalizeGenerationSettings,
-  normalizeAgentProfileList,
   DEFAULT_GENERATION_SETTINGS
 } = require("../../../shared/core");
+const { normalizeModelRoles } = require("./model-roles.cjs");
 
 module.exports = {
   async saveGenerationSettings({ settings } = {}) {
@@ -17,7 +17,6 @@ module.exports = {
   },
 
   async saveModelRoles({ modelRoles } = {}) {
-    const { normalizeModelRoles } = require("../controller.cjs");
     this.settings.modelRoles = normalizeModelRoles(modelRoles, this.models);
     await writeSettings(this.settings);
     this.postState();

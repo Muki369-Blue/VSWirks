@@ -10,6 +10,24 @@ const { DEFAULT_RUNTIME_BASE_URL } = require("../../../shared/core/defaults");
 
 const DEFAULT_ABLITERATOR_DIR = path.join(os.homedir(), "Documents", "abliterator-main");
 
+/**
+ * Validate a file-system path for use in Python code strings.
+ * Rejects paths containing characters that could break out of Python string literals.
+ */
+function assertSafePath(p, label) {
+  if (typeof p !== "string" || !p.trim()) {
+    throw new Error(`${label} is required`);
+  }
+  // Reject characters that could escape Python string context
+  if (/["'\\`$\n\r\0]/.test(p)) {
+    throw new Error(`${label} contains unsafe characters`);
+  }
+  // Must be an absolute path
+  if (!path.isAbsolute(p)) {
+    throw new Error(`${label} must be an absolute path`);
+  }
+}
+
 module.exports = {
   DEFAULT_ABLITERATOR_DIR,
 
@@ -158,7 +176,9 @@ module.exports = {
 
   async abliterateModel({ modelPath, config = {} } = {}) {
     if (!modelPath) return { ok: false, error: "No model path provided" };
+    try { assertSafePath(modelPath, "modelPath"); } catch (e) { return { ok: false, error: e.message }; }
     const abliteratorDir = (this.settings && this.settings.abliteratorDir) || DEFAULT_ABLITERATOR_DIR;
+    try { assertSafePath(abliteratorDir, "abliteratorDir"); } catch (e) { return { ok: false, error: e.message }; }
     const outputDir = path.join(os.homedir(), ".abliterate", "abliterated_models", path.basename(modelPath) + "-abliterated");
     await fs.mkdir(outputDir, { recursive: true }).catch(() => {});
 
@@ -241,7 +261,9 @@ module.exports = {
 
   async evaluateRefusal({ modelPath } = {}) {
     if (!modelPath) return { ok: false, error: "No model path" };
+    try { assertSafePath(modelPath, "modelPath"); } catch (e) { return { ok: false, error: e.message }; }
     const abliteratorDir = (this.settings && this.settings.abliteratorDir) || DEFAULT_ABLITERATOR_DIR;
+    try { assertSafePath(abliteratorDir, "abliteratorDir"); } catch (e) { return { ok: false, error: e.message }; }
     const pythonBin = path.join(abliteratorDir, ".venv", "bin", "python");
     try {
       const output = cp.execFileSync(pythonBin, [
@@ -257,7 +279,12 @@ module.exports = {
 
   async exportToGguf({ modelPath, quantType = "Q4_K_M" } = {}) {
     if (!modelPath) return { ok: false, error: "No model path" };
+    try { assertSafePath(modelPath, "modelPath"); } catch (e) { return { ok: false, error: e.message }; }
+    if (typeof quantType !== "string" || !/^[A-Za-z0-9_]+$/.test(quantType)) {
+      return { ok: false, error: "Invalid quantization type" };
+    }
     const abliteratorDir = (this.settings && this.settings.abliteratorDir) || DEFAULT_ABLITERATOR_DIR;
+    try { assertSafePath(abliteratorDir, "abliteratorDir"); } catch (e) { return { ok: false, error: e.message }; }
     const outputDir = path.join(os.homedir(), ".abliterate", "gguf_exports");
     await fs.mkdir(outputDir, { recursive: true }).catch(() => {});
     const pythonBin = path.join(abliteratorDir, ".venv", "bin", "python");
@@ -274,6 +301,10 @@ module.exports = {
 
   async importToOllama({ ggufPath, modelName } = {}) {
     if (!ggufPath || !modelName) return { ok: false, error: "Missing ggufPath or modelName" };
+    try { assertSafePath(ggufPath, "ggufPath"); } catch (e) { return { ok: false, error: e.message }; }
+    if (typeof modelName !== "string" || !/^[a-zA-Z0-9._:/-]+$/.test(modelName)) {
+      return { ok: false, error: "Invalid model name" };
+    }
     const modelfile = `FROM ${ggufPath}\nPARAMETER temperature 0.7\nPARAMETER num_ctx 4096`;
     const modelfilePath = path.join(os.tmpdir(), `ollama-modelfile-${Date.now()}`);
     await fs.writeFile(modelfilePath, modelfile, "utf-8");
