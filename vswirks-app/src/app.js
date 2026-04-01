@@ -211,6 +211,7 @@
     studioTabChat: document.getElementById("studioTabChat"),
     studioTabTerminal: document.getElementById("studioTabTerminal"),
     studioTabCompare: document.getElementById("studioTabCompare"),
+    studioTabStack: document.getElementById("studioTabStack"),
     studioTerminal: document.getElementById("studioTerminal"),
     studioTerminalOutput: document.getElementById("studioTerminalOutput"),
     studioTerminalInput: document.getElementById("studioTerminalInput"),
@@ -223,6 +224,17 @@
     compareHeaderB: document.getElementById("compareHeaderB"),
     compareResultA: document.getElementById("compareResultA"),
     compareResultB: document.getElementById("compareResultB"),
+    studioStack: document.getElementById("studioStack"),
+    studioHubRefresh: document.getElementById("studioHubRefresh"),
+    studioHubOpen: document.getElementById("studioHubOpen"),
+    studioHubImportProject: document.getElementById("studioHubImportProject"),
+    studioHubSummary: document.getElementById("studioHubSummary"),
+    studioHubProviders: document.getElementById("studioHubProviders"),
+    studioHubEvals: document.getElementById("studioHubEvals"),
+    studioHubSearchQuery: document.getElementById("studioHubSearchQuery"),
+    studioHubSearchBtn: document.getElementById("studioHubSearchBtn"),
+    studioHubSearchResults: document.getElementById("studioHubSearchResults"),
+    studioHubHandoff: document.getElementById("studioHubHandoff"),
     mode: document.getElementById("mode"),
     workflowPreset: document.getElementById("workflowPreset"),
     agentProfile: document.getElementById("agentProfile"),
@@ -353,6 +365,13 @@
     serviceHealthy: false,
     serviceStarting: false,
     serviceLabel: "Service offline",
+    hub: {
+      healthy: false,
+      label: "Hub offline",
+      baseUrl: "http://127.0.0.1:7460",
+      bundle: null,
+      lastSearch: null
+    },
     settings: {
       generationSettings: {
         chatTemperature: 0.2,
@@ -447,6 +466,7 @@
   api.onState((payload) => {
     const wasPending = state.pending;
     const prevProjectId = state.activeProjectId;
+    const prevHubBundle = state.hub ? state.hub.bundle : null;
     state = {
       ...state,
       ...payload
@@ -474,6 +494,9 @@
     }
     if (state.pending && state.statusText && state.statusText !== progress.lastLabel) {
       updateProgress(state.statusText);
+    }
+    if (state.hub && state.hub.bundle && state.hub.bundle !== prevHubBundle) {
+      refreshModelPanel();
     }
     render();
   });
@@ -860,7 +883,25 @@
   // ── Model panel ──────────────────────────────────
 
   async function refreshModelPanel() {
-    const models = await api.invoke("vswirks:listOllamaModels");
+    const hubCatalog =
+      state.hub &&
+      state.hub.bundle &&
+      state.hub.bundle.providers &&
+      Array.isArray(state.hub.bundle.providers.models)
+        ? state.hub.bundle.providers.models
+        : [];
+    const ollamaModels = hubCatalog.length ? [] : await api.invoke("vswirks:listOllamaModels");
+    const models = hubCatalog.length
+      ? hubCatalog.map((item) => ({
+          name: item.id,
+          provider: item.provider,
+          capabilities: item.capabilities || [],
+          role: item.role || "",
+          status: item.status || ""
+        }))
+      : Array.isArray(ollamaModels)
+        ? ollamaModels
+        : [];
     if (!Array.isArray(models) || !models.length) {
       elements.studioModelPanel.innerHTML = '<span class="meta">No models found</span>';
       return;
@@ -871,7 +912,7 @@
     models.forEach((m) => {
       const opt = document.createElement("option");
       opt.value = m.name;
-      opt.textContent = m.name;
+      opt.textContent = m.provider ? `${m.name} (${m.provider})` : m.name;
       elements.studioModelSelect.appendChild(opt);
     });
     if (prev) elements.studioModelSelect.value = prev;
@@ -883,17 +924,38 @@
       const label = document.createElement("span");
       label.className = "model-name";
       label.textContent = m.name;
-      label.title = `${m.size} — ${m.modified}`;
+      label.title = [
+        m.size,
+        m.modified,
+        m.provider ? `provider=${m.provider}` : "",
+        Array.isArray(m.capabilities) ? m.capabilities.join(", ") : "",
+        m.role ? `role=${m.role}` : ""
+      ].filter(Boolean).join(" — ");
       row.appendChild(label);
+      if (m.provider || (Array.isArray(m.capabilities) && m.capabilities.length)) {
+        const meta = document.createElement("span");
+        meta.className = "model-meta";
+        meta.textContent = [
+          m.provider || "",
+          Array.isArray(m.capabilities) ? m.capabilities.join("/") : "",
+          m.role || ""
+        ].filter(Boolean).join(" · ");
+        row.appendChild(meta);
+      }
       const del = document.createElement("button");
       del.className = "icon-btn model-delete";
       del.textContent = "×";
       del.title = `Delete ${m.name}`;
       del.addEventListener("click", async () => {
+        if (m.provider && m.provider !== "ollama") return;
         if (!confirm(`Delete model "${m.name}"?`)) return;
         const result = await api.invoke("vswirks:deleteOllamaModel", { name: m.name });
         if (result && result.ok) refreshModelPanel();
       });
+      if (m.provider && m.provider !== "ollama") {
+        del.disabled = true;
+        del.title = "Delete is only implemented for Ollama models";
+      }
       row.appendChild(del);
       elements.studioModelPanel.appendChild(row);
     });
@@ -916,6 +978,98 @@
       row.innerHTML = `<span class="file-change-icon">${icon}</span><span class="file-change-name">${escapeHtml(c.file)}</span>`;
       elements.studioFileChanges.appendChild(row);
     });
+  }
+
+  function renderStudioHubPanel() {
+    const hub = state.hub || {};
+    const bundle = hub.bundle || {};
+    const capabilities = bundle.capabilities || {};
+    const providers = bundle.providers || {};
+    const analytics = bundle.analytics || {};
+    const handoff = bundle.builder_handoff || {};
+    const recentSearch = hub.lastSearch && Array.isArray(hub.lastSearch.results) ? hub.lastSearch.results : [];
+
+    elements.studioHubSummary.innerHTML = [
+      {
+        label: "ai-runtime",
+        value: state.serviceHealthy ? "ready" : state.serviceLabel || "offline"
+      },
+      {
+        label: "ai-hub",
+        value: hub.healthy ? hub.label || "ready" : hub.label || "offline"
+      },
+      {
+        label: "OCR",
+        value:
+          capabilities.ocr && capabilities.ocr.tesseract_ready
+            ? "tesseract ready"
+            : "not ready"
+      },
+      {
+        label: "Browser QA",
+        value:
+          capabilities.browser_automation && capabilities.browser_automation.chromium_ready
+            ? "chromium ready"
+            : "not ready"
+      }
+    ].map((item) => `
+      <div class="studio-stack-pill">
+        <strong>${escapeHtml(item.label)}</strong>
+        <span>${escapeHtml(item.value)}</span>
+      </div>
+    `).join("");
+
+    const providerItems = Array.isArray(providers.models) ? providers.models.slice(0, 10) : [];
+    elements.studioHubProviders.innerHTML = providerItems.length
+      ? providerItems.map((item) => `
+          <div class="studio-stack-item">
+            <strong>${escapeHtml(item.id || "(unknown)")}</strong>
+            <span>${escapeHtml([item.provider, (item.capabilities || []).join("/"), item.role || "unassigned"].filter(Boolean).join(" · "))}</span>
+          </div>
+        `).join("")
+      : '<span class="meta">No provider inventory loaded yet.</span>';
+
+    const evalItems = [
+      `Smoke runs: ${analytics.smoke ? analytics.smoke.runs || 0 : 0}`,
+      `Smoke avg latency: ${analytics.smoke ? analytics.smoke.avg_latency_ms || 0 : 0} ms`,
+      `OCR repaired: ${analytics.ocr ? analytics.ocr.ocr_repaired_total || 0 : 0}`,
+      `Browser QA runs: ${analytics.browser_qa ? analytics.browser_qa.runs || 0 : 0}`
+    ];
+    elements.studioHubEvals.innerHTML = evalItems
+      .map((text) => `<div class="studio-stack-item"><span>${escapeHtml(text)}</span></div>`)
+      .join("");
+
+    elements.studioHubSearchResults.innerHTML = recentSearch.length
+      ? recentSearch.map((item) => `
+          <div class="search-result-row">
+            <strong>${escapeHtml(item.title || item.path || "(result)")}</strong>
+            <span class="meta">${escapeHtml(item.scope || "")}</span>
+            <pre class="search-result-snippet">${escapeHtml(item.snippet || "")}</pre>
+          </div>
+        `).join("")
+      : '<span class="meta">Run a hub search to query projects, jobs, manifests, and indexed events.</span>';
+
+    const handoffProject = handoff.latest_project;
+    const handoffItems = [];
+    if (handoffProject) {
+      handoffItems.push(`
+        <div class="studio-stack-item">
+          <strong>${escapeHtml(handoffProject.name || "(latest project)")}</strong>
+          <span>${escapeHtml(handoffProject.path || "")}</span>
+        </div>
+      `);
+    }
+    if (Array.isArray(handoff.suggestions) && handoff.suggestions.length) {
+      handoffItems.push(...handoff.suggestions.slice(0, 3).map((item) => `
+        <div class="studio-stack-item">
+          <strong>${escapeHtml(item.label || item.id || "Suggestion")}</strong>
+          <span>${escapeHtml(item.reason || "")}</span>
+        </div>
+      `));
+    }
+    elements.studioHubHandoff.innerHTML = handoffItems.length
+      ? handoffItems.join("")
+      : '<span class="meta">No builder handoff context loaded yet.</span>';
   }
 
   // ── RAG search ──────────────────────────────────
@@ -1004,6 +1158,56 @@
     document.querySelectorAll(".studio-panel").forEach((el) => {
       el.style.display = el.dataset.panel === panel ? "" : "none";
     });
+  }
+
+  async function refreshHubPanel() {
+    const result = await api.invoke("vswirks:refreshHubState");
+    if (!result || result.healthy === false) {
+      state.statusText = (result && result.label) || "Hub offline";
+      renderStudioStatus();
+    }
+  }
+
+  async function runHubSearch() {
+    const query = elements.studioHubSearchQuery.value.trim();
+    if (!query) {
+      return;
+    }
+    const result = await api.invoke("vswirks:hubSearch", {
+      query,
+      scopes: ["projects", "events", "jobs", "manifest"]
+    });
+    if (!result || !result.ok) {
+      state.statusText = (result && result.error) || "Hub search failed";
+      renderStudioStatus();
+      return;
+    }
+    state.hub = {
+      ...(state.hub || {}),
+      lastSearch: result
+    };
+    renderStudioHubPanel();
+  }
+
+  async function importHubProject() {
+    const result = await api.invoke("vswirks:importHubProject", {});
+    if (!result || !result.ok) {
+      state.statusText = (result && result.error) || "Hub project import failed";
+      renderStudioStatus();
+      return;
+    }
+    state.statusText = result.imported
+      ? "Imported latest ai-hub builder project"
+      : "Switched to existing ai-hub project";
+    renderStudioStatus();
+  }
+
+  async function openHubUi() {
+    const result = await api.invoke("vswirks:openHub", {});
+    if (!result || !result.ok) {
+      state.statusText = (result && result.error) || "Could not open ai-hub";
+      renderStudioStatus();
+    }
   }
 
   // ── Terminal ─────────────────────────────────────
@@ -1227,6 +1431,7 @@
       renderStudioMessages();
       renderStudioStatus();
       renderFileChanges();
+      renderStudioHubPanel();
       return;
     }
     syncTopbarControls();
@@ -2910,8 +3115,19 @@
   elements.studioGenerateImage.addEventListener("click", generateImage);
 
   // Studio tabs
-  [elements.studioTabChat, elements.studioTabTerminal, elements.studioTabCompare].forEach((btn) => {
+  [elements.studioTabChat, elements.studioTabTerminal, elements.studioTabCompare, elements.studioTabStack].forEach((btn) => {
     btn.addEventListener("click", () => switchStudioPanel(btn.dataset.panel));
+  });
+
+  elements.studioHubRefresh.addEventListener("click", refreshHubPanel);
+  elements.studioHubOpen.addEventListener("click", openHubUi);
+  elements.studioHubImportProject.addEventListener("click", importHubProject);
+  elements.studioHubSearchBtn.addEventListener("click", runHubSearch);
+  elements.studioHubSearchQuery.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      runHubSearch();
+    }
   });
 
   // Terminal

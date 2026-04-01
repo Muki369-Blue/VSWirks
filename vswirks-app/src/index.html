@@ -168,6 +168,7 @@
           <button id="studioTabChat" class="studio-tab active" data-panel="chat">Chat</button>
           <button id="studioTabTerminal" class="studio-tab" data-panel="terminal">Terminal</button>
           <button id="studioTabCompare" class="studio-tab" data-panel="compare">A/B Compare</button>
+          <button id="studioTabStack" class="studio-tab" data-panel="stack">Service Center</button>
         </div>
 
         <!-- Chat panel -->
@@ -200,6 +201,37 @@
               <div id="compareHeaderB" class="compare-header">Model B</div>
               <div id="compareResultB" class="compare-output"></div>
             </div>
+          </div>
+        </section>
+
+        <section id="studioStack" class="studio-stack studio-panel" data-panel="stack" style="display:none">
+          <div class="stack-toolbar">
+            <button id="studioHubRefresh" class="ghost-button compact-button">Refresh Hub</button>
+            <button id="studioHubOpen" class="ghost-button compact-button">Open Hub UI</button>
+            <button id="studioHubImportProject" class="primary compact-button">Import Latest Builder Project</button>
+          </div>
+          <div id="studioHubSummary" class="studio-stack-grid"></div>
+          <div class="studio-stack-panels">
+            <div class="studio-stack-card">
+              <h3>Providers</h3>
+              <div id="studioHubProviders" class="studio-stack-list"></div>
+            </div>
+            <div class="studio-stack-card">
+              <h3>Runs and Evals</h3>
+              <div id="studioHubEvals" class="studio-stack-list"></div>
+            </div>
+          </div>
+          <div class="studio-stack-card">
+            <h3>Hub Search</h3>
+            <div class="studio-stack-search">
+              <input id="studioHubSearchQuery" type="text" placeholder="Search projects, jobs, manifests, events…" class="compact-input" />
+              <button id="studioHubSearchBtn" class="ghost-button compact-button">Search Hub</button>
+            </div>
+            <div id="studioHubSearchResults" class="studio-search-results"></div>
+          </div>
+          <div class="studio-stack-card">
+            <h3>Builder Handoff</h3>
+            <div id="studioHubHandoff" class="studio-stack-list"></div>
           </div>
         </section>
 

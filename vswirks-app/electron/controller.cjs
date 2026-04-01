@@ -3,11 +3,30 @@ const fs = require("fs/promises");
 const os = require("os");
 const path = require("path");
 
-const { dialog } = require("electron");
+let dialog;
+let shell;
+try {
+  ({ dialog, shell } = require("electron"));
+} catch (_error) {
+  dialog = {
+    async showSaveDialog() {
+      return { canceled: true, filePath: undefined };
+    },
+    async showOpenDialog() {
+      return { canceled: true, filePaths: [] };
+    }
+  };
+  shell = {
+    async openExternal() {
+      return false;
+    }
+  };
+}
 
 const {
   APP_STATE_VERSION,
   DEFAULT_MODEL,
+  DEFAULT_HUB_BASE_URL,
   DEFAULT_RUNTIME_BASE_URL,
   DEFAULT_RUNTIME_CWD,
   DEFAULT_RUNTIME_PYTHON,
@@ -38,6 +57,10 @@ const {
   probeRuntimeHealth,
   waitForRuntimeHealthy
 } = require("../../shared/runtime-client");
+const {
+  fetchHubJson,
+  probeHubHealth
+} = require("../../shared/hub-client");
 const {
   ensureVSWirksDirs,
   readAppState,
@@ -103,8 +126,15 @@ class VSWirksController {
       starting: false,
       label: "Service offline"
     };
+    this.hubState = {
+      healthy: false,
+      label: "Hub offline",
+      bundle: null,
+      lastSearch: null
+    };
     this.settings = {
       runtimeBaseUrl: DEFAULT_RUNTIME_BASE_URL,
+      hubBaseUrl: DEFAULT_HUB_BASE_URL,
       defaultModel: DEFAULT_CODER_MODEL,
       modelRoles: createDefaultModelRoles(DEFAULT_MODEL),
       runtimeCwd: DEFAULT_RUNTIME_CWD,
@@ -678,17 +708,27 @@ class VSWirksController {
         }
       }
     } catch {}
-    // HuggingFace cache
-    const hfDir = path.join(os.homedir(), ".cache", "huggingface", "hub");
-    try {
-      const entries = await fs.readdir(hfDir, { withFileTypes: true });
-      for (const entry of entries) {
-        if (entry.isDirectory() && entry.name.startsWith("models--")) {
-          const modelName = entry.name.replace("models--", "").replace(/--/g, "/");
-          models.push({ name: modelName, source: "huggingface", abliterated: false, path: path.join(hfDir, entry.name) });
+    // HuggingFace cache — respect env vars, then check ~/ai/cache layout, then legacy ~/.cache
+    const hfEnv = process.env.HUGGINGFACE_HUB_CACHE
+      || (process.env.HF_HOME && path.join(process.env.HF_HOME, "hub"))
+      || null;
+    const hfCandidates = [
+      hfEnv,
+      path.join(os.homedir(), "ai", "cache", "huggingface", "hub"),
+      path.join(os.homedir(), ".cache", "huggingface", "hub")
+    ].filter(Boolean);
+    for (const hfDir of hfCandidates) {
+      try {
+        const entries = await fs.readdir(hfDir, { withFileTypes: true });
+        for (const entry of entries) {
+          if (entry.isDirectory() && entry.name.startsWith("models--")) {
+            const modelName = entry.name.replace("models--", "").replace(/--/g, "/");
+            models.push({ name: modelName, source: "huggingface", abliterated: false, path: path.join(hfDir, entry.name) });
+          }
         }
-      }
-    } catch {}
+        break;
+      } catch {}
+    }
     return { ok: true, models };
   }
 
@@ -896,6 +936,7 @@ class VSWirksController {
     await this.editorIntegration.refreshState();
     await this.loadBridgeState();
     await this.refreshRuntimeState();
+    await this.refreshHubState();
     // Don't auto-select a project on startup — let Studio open project-free.
     // Projects are listed in the sidebar for the user to pick.
     // A project becomes active when the user clicks one, sends a prompt,
@@ -913,8 +954,11 @@ class VSWirksController {
         return true;
       case "vswirks:refreshModels":
         await this.refreshRuntimeState(true);
+        await this.refreshHubState(true);
         await this.refreshProjectIntelligence(this.getActiveProject(), true);
         return true;
+      case "vswirks:refreshHubState":
+        return this.refreshHubState(true);
       case "vswirks:startService":
         await this.startRuntimeService();
         return true;
@@ -1014,6 +1058,12 @@ class VSWirksController {
         return this.compareModels(payload || {});
       case "vswirks:searchProjectFiles":
         return this.searchProjectFiles(payload || {});
+      case "vswirks:hubSearch":
+        return this.hubSearch(payload || {});
+      case "vswirks:importHubProject":
+        return this.importHubProject(payload || {});
+      case "vswirks:openHub":
+        return this.openHub();
       case "vswirks:indexProject":
         return this.indexProject(payload || {});
       case "vswirks:ragSearch":
@@ -1057,6 +1107,10 @@ class VSWirksController {
         typeof stored.runtimeBaseUrl === "string" && stored.runtimeBaseUrl.trim()
           ? stored.runtimeBaseUrl.trim()
           : DEFAULT_RUNTIME_BASE_URL,
+      hubBaseUrl:
+        typeof stored.hubBaseUrl === "string" && stored.hubBaseUrl.trim()
+          ? stored.hubBaseUrl.trim()
+          : DEFAULT_HUB_BASE_URL,
       defaultModel: DEFAULT_CODER_MODEL,
       modelRoles: normalizeModelRoles(stored.modelRoles, priorDefaultModel),
       runtimeCwd:
@@ -3064,6 +3118,27 @@ class VSWirksController {
     return false;
   }
 
+  async refreshHubState(refreshBundle = false) {
+    const nextState = await probeHubHealth(this.settings.hubBaseUrl || DEFAULT_HUB_BASE_URL);
+    this.hubState = {
+      ...this.hubState,
+      healthy: nextState.healthy,
+      label: nextState.label
+    };
+
+    if (nextState.healthy && (refreshBundle || !this.hubState.bundle)) {
+      try {
+        this.hubState.bundle = await fetchHubJson(this.settings.hubBaseUrl, "/ops/hub-bundle");
+      } catch (error) {
+        this.hubState.bundle = null;
+        this.hubState.label = `Hub error: ${error.message}`;
+      }
+    }
+
+    this.postState();
+    return this.hubState;
+  }
+
   async refreshRuntimeState(refreshModels = false) {
     const nextState = await probeRuntimeHealth(this.settings.runtimeBaseUrl);
     this.serviceState = {
@@ -3084,6 +3159,111 @@ class VSWirksController {
     }
 
     this.postState();
+  }
+
+  async hubSearch({ query, scopes = ["projects", "events", "jobs", "manifest"], semantic = false } = {}) {
+    if (!query || !String(query).trim()) {
+      return { ok: false, error: "No search query provided", results: [] };
+    }
+    const params = new URLSearchParams({
+      q: String(query).trim(),
+      scopes: Array.isArray(scopes) ? scopes.join(",") : String(scopes || ""),
+      limit: "16",
+      semantic: semantic ? "true" : "false"
+    });
+    const result = await fetchHubJson(this.settings.hubBaseUrl, `/ops/search?${params.toString()}`);
+    this.hubState = {
+      ...this.hubState,
+      lastSearch: result
+    };
+    this.postState();
+    return result;
+  }
+
+  async importHubProject({ projectPath } = {}) {
+    let targetPath =
+      typeof projectPath === "string" && projectPath.trim()
+        ? projectPath.trim()
+        : "";
+    let handoff = this.hubState.bundle && this.hubState.bundle.builder_handoff
+      ? this.hubState.bundle.builder_handoff
+      : null;
+
+    if (!targetPath) {
+      if (!handoff) {
+        try {
+          handoff = await fetchHubJson(this.settings.hubBaseUrl, "/builder/handoff");
+        } catch (error) {
+          return { ok: false, error: error.message || "ai-hub builder handoff unavailable" };
+        }
+      }
+      targetPath =
+        handoff && handoff.latest_project && typeof handoff.latest_project.path === "string"
+          ? handoff.latest_project.path
+          : "";
+    }
+
+    if (!targetPath) {
+      return { ok: false, error: "No builder project path available from ai-hub" };
+    }
+    if (!(await exists(targetPath))) {
+      return { ok: false, error: `Builder project path does not exist: ${targetPath}` };
+    }
+
+    const existing = this.projects.find((project) => project.workspaceRoot === targetPath);
+    if (existing) {
+      await this.switchProject(existing.id);
+      return { ok: true, projectId: existing.id, imported: false, workspaceRoot: targetPath };
+    }
+
+    const project = this.createProjectRecord({
+      name: path.basename(targetPath),
+      workspaceRoot: targetPath,
+      targetPath
+    });
+    project.intelligence = createProjectIntelligence({
+      workspaceRoot: targetPath,
+      targetPath,
+      summary: "Imported from ai-hub builder handoff."
+    });
+    this.projects.unshift(project);
+    this.activeProjectId = project.id;
+    await this.refreshProjectIntelligence(project, false);
+
+    const thread = this.getActiveThread(project);
+    if (thread && handoff) {
+      const details = [];
+      if (handoff.latest_project && handoff.latest_project.preview_url) {
+        details.push(`Preview: ${handoff.latest_project.preview_url}`);
+      }
+      const recentJobs = Array.isArray(handoff.recent_jobs) ? handoff.recent_jobs.slice(0, 3) : [];
+      if (recentJobs.length) {
+        details.push(`Recent jobs: ${recentJobs.map((item) => item.action).join(", ")}`);
+      }
+      thread.messages.push({
+        id: makeId("assistant"),
+        role: "assistant",
+        content:
+          "Imported from ai-hub builder handoff.\n\n" +
+          (details.length ? details.map((item) => `- ${item}`).join("\n") : "- No builder context was available."),
+        model: "",
+        mode: "chat",
+        executionMode: "plan",
+        pending: false,
+        createdAt: Date.now()
+      });
+    }
+
+    this.lastStatus = `Imported builder project ${project.name}`;
+    await this.persistState();
+    this.postState();
+    return { ok: true, projectId: project.id, imported: true, workspaceRoot: targetPath };
+  }
+
+  async openHub() {
+    const url = (this.settings.hubBaseUrl || DEFAULT_HUB_BASE_URL).replace(/\/$/, "");
+    await shell.openExternal(url);
+    return { ok: true, url };
   }
 
   async startRuntimeService() {
@@ -3356,6 +3536,13 @@ class VSWirksController {
       serviceLabel: this.serviceState.label,
       serviceHealthy: this.serviceState.healthy,
       serviceStarting: this.serviceState.starting,
+      hub: {
+        healthy: this.hubState.healthy,
+        label: this.hubState.label,
+        baseUrl: this.settings.hubBaseUrl,
+        bundle: this.hubState.bundle,
+        lastSearch: this.hubState.lastSearch
+      },
       settings: {
         ...this.settings,
         agentProfiles: this.settings.agentProfiles || getDefaultAgentProfiles()

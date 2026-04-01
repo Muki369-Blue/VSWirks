@@ -3,6 +3,7 @@
 const IPC_CHANNELS = Object.freeze([
   "vswirks:ready",
   "vswirks:refreshModels",
+  "vswirks:refreshHubState",
   "vswirks:startService",
   "vswirks:createProject",
   "vswirks:switchProject",
@@ -52,6 +53,9 @@ const IPC_CHANNELS = Object.freeze([
   "vswirks:runCommand",
   "vswirks:compareModels",
   "vswirks:searchProjectFiles",
+  "vswirks:hubSearch",
+  "vswirks:importHubProject",
+  "vswirks:openHub",
   "vswirks:indexProject",
   "vswirks:ragSearch",
   "vswirks:generateImage",

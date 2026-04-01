@@ -60,6 +60,27 @@ async function withRuntimeServer(handler, run) {
   }
 }
 
+async function withHubServer(handler, run) {
+  const server = http.createServer(handler);
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  const baseUrl = `http://127.0.0.1:${address.port}`;
+
+  try {
+    await run(baseUrl);
+  } finally {
+    await new Promise((resolve, reject) => {
+      server.close((error) => {
+        if (error) {
+          reject(error);
+          return;
+        }
+        resolve();
+      });
+    });
+  }
+}
+
 test("reconcileBridgeProject adopts the bridge workspace into an empty project", () => {
   const controller = createController();
   controller.projects = [
@@ -241,6 +262,59 @@ test("setTargetPath rejects folders outside the active project root", async () =
     await fs.rm(tmpRoot, { recursive: true, force: true });
     await fs.rm(outside, { recursive: true, force: true });
   }
+});
+
+test("refreshHubState loads the ai-hub bundle and marks the hub healthy", async () => {
+  await withHubServer((request, response) => {
+    if (request.url === "/healthz") {
+      response.end(JSON.stringify({ ok: true }));
+      return;
+    }
+    if (request.url === "/ops/hub-bundle") {
+      response.setHeader("Content-Type", "application/json");
+      response.end(JSON.stringify({
+        ok: true,
+        providers: { models: [{ id: "llama3.1:8b", provider: "ollama", capabilities: ["chat"] }] },
+        builder_handoff: { latest_project: { name: "sample", path: "/tmp/sample" } }
+      }));
+      return;
+    }
+    response.statusCode = 404;
+    response.end("missing");
+  }, async (baseUrl) => {
+    const controller = createController();
+    controller.settings.hubBaseUrl = baseUrl;
+
+    const result = await controller.refreshHubState(true);
+
+    assert.equal(result.healthy, true);
+    assert.equal(controller.hubState.bundle.ok, true);
+    assert.equal(controller.hubState.bundle.builder_handoff.latest_project.path, "/tmp/sample");
+  });
+});
+
+test("importHubProject creates a VSWirks project from ai-hub handoff data", async () => {
+  const controller = createController();
+  const tmpRoot = await fs.mkdtemp(path.join(os.tmpdir(), "vswirks-hub-import-"));
+  controller.hubState.bundle = {
+    builder_handoff: {
+      latest_project: {
+        name: "sample-app",
+        path: tmpRoot,
+        preview_url: "http://127.0.0.1:4100"
+      },
+      recent_jobs: [{ action: "workflow:ship-new-app" }]
+    }
+  };
+  controller.refreshProjectIntelligence = async () => ({ summary: "ok" });
+
+  const result = await controller.importHubProject({});
+  const project = controller.getActiveProject();
+  const thread = controller.getActiveThread(project);
+
+  assert.equal(result.ok, true);
+  assert.equal(project.workspaceRoot, tmpRoot);
+  assert.equal(thread.messages.some((item) => /Imported from ai-hub builder handoff/.test(item.content)), true);
 });
 
 test("syncEditorToProject opens the workspace root before a nested target path", async () => {

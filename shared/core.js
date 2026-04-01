@@ -13,6 +13,7 @@ const MAX_API_MESSAGES = 120;
 const DEFAULT_MODEL = "qwen2.5-coder:14b-instruct";
 const DEFAULT_EXECUTION_MODE = "plan";
 const DEFAULT_RUNTIME_BASE_URL = "http://127.0.0.1:7471/v1";
+const DEFAULT_HUB_BASE_URL = "http://127.0.0.1:7460";
 const DEFAULT_RUNTIME_CWD = path.join(os.homedir(), "dev", "ai-runtime");
 const DEFAULT_RUNTIME_PYTHON = (() => {
   const candidates = [
@@ -999,6 +1000,7 @@ module.exports = {
   DEFAULT_MODEL,
   DEFAULT_EXECUTION_MODE,
   DEFAULT_RUNTIME_BASE_URL,
+  DEFAULT_HUB_BASE_URL,
   DEFAULT_RUNTIME_CWD,
   DEFAULT_RUNTIME_PYTHON,
   DEFAULT_SYSTEM_PROMPT,
